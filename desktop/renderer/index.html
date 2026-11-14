@@ -32,7 +32,8 @@
     <h2>② 画质档位</h2>
     <div class="grid">
       <div class="field"><label>网格行数</label><input id="grid" type="number" value="60" min="8" max="200"></div>
-      <div class="field"><label>帧率（留空 = 源片原生）</label><input id="fps" type="text" placeholder="如 30"></div>
+      <div class="field"><label>字符列数（超采样，留空则用行数）</label><input id="cols" type="text" placeholder="如 426 / 852"></div>
+      <div class="field"><label>帧率（留空 = 源片原生）</label><input id="fps" type="text" placeholder="如 48"></div>
       <div class="field"><label>每块帧数</label><input id="chunk" type="number" value="60" min="1"></div>
       <div class="field"><label>灰度级数</label>
         <select id="ramp"><option value="70">70 级（默认）</option><option value="10">10 级</option></select>
@@ -42,10 +43,28 @@
     </div>
     <div class="checks">
       <label><input id="half" type="checkbox"> ▀ 上下双色（垂直分辨率翻倍，体积约 1.75×）</label>
+      <label><input id="interp" type="checkbox"> --interp 配合高于源片的帧率做运动补偿插帧（实验性）</label>
       <label><input id="force" type="checkbox"> 覆盖已有产物（--force）</label>
+      <span class="tip">填了「字符列数」就不再用「网格行数」，脚本按源片比例自动反算行数，画面不会拉长。</span>
     </div>
 
-    <h2>③ 启动大字 <small>（命令行版同款）</small></h2>
+    <h2>③ 声音 <small>（单独一路，不混进画面数据）</small></h2>
+    <div class="checks">
+      <label><input id="audio" type="checkbox"> 从源片抽一条主音轨（--audio，默认关闭）</label>
+    </div>
+    <div class="grid">
+      <div class="field"><label>编码</label>
+        <select id="audioCodec"><option value="opus">Opus / .webm（默认）</option><option value="mp3">MP3</option><option value="pcm">WAV / PCM</option></select>
+      </div>
+      <div class="field"><label>码率</label><input id="audioBitrate" type="text" value="48k" placeholder="48k"></div>
+      <div class="field"><label>轨道 ID</label><input id="audioId" type="text" value="main" placeholder="main"></div>
+      <div class="field"><label>已有产物补音轨</label><span class="tip">命令行跑 attach-audio.js，几 GB 的 chunks 一个字节都不用重转</span></div>
+    </div>
+    <div class="checks">
+      <span class="tip">音轨是 meta.audio.tracks[] 数组：后期可叠加 BGM / 解说 / 多语种，逐轨调音量与延迟；播放器以主轨时间为时钟，拖帧不变调。</span>
+    </div>
+
+    <h2>④ 启动大字 <small>（命令行版同款）</small></h2>
     <div class="grid">
       <div class="field"><label>大字文字</label><input id="logo" type="text" value="ASCII FULL"></div>
       <div class="field"><label>填充字符</label><input id="logoChar" type="text" value="#" maxlength="1"></div>

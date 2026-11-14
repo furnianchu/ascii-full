@@ -35,6 +35,8 @@ function run(code, meta, u8, blockMode, gain) {
   const ctx = mockCtx(), off = mockCtx();
   const sandbox = {
     M:meta, CELL_W:8, CELL_H:16, gain, blockMode, chase:false, MAX_CACHE:6,
+    // draw() 的状态栏会读音频状态；渲染等价性测试里按「无音轨」情形 mock
+    masterEl:null, AUD:[], muted:false, offsetSec:0,
     ctx, cv:{ width:meta.W*8, height:meta.H*16 },
     cache:new Map([[0, u8]]), offCv:null, offCtx:null, offImg:null,
     performance:{ now:()=>1000 },

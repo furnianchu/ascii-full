@@ -1,8 +1,8 @@
 {
   "name": "ascii-full-desktop",
   "productName": "ascii-full",
-  "version": "1.2.0",
-  "description": "Desktop GUI for ascii-full — turn any video into local truecolor ASCII frames",
+  "version": "1.4.0",
+  "description": "Desktop GUI for ascii-full — truecolor ASCII frames with a separate multitrack audio lane",
   "main": "main.js",
   "license": "MIT",
   "scripts": {

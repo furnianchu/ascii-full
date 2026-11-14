@@ -33,6 +33,16 @@
   #zlabel { color:#7b7078; font-size:11px; min-width:74px; }
   #err { color:#ff6b7f; padding:14px; font-size:13px; line-height:1.8; }
   .hint { color:#5d5560; font-size:11px; }
+  details#atracks { font-size:11px; color:#7b7078; }
+  details#atracks summary { cursor:pointer; border:1px solid #dbc29155; padding:5px 10px; border-radius:2px; }
+  .apane { position:absolute; bottom:62px; left:14px; z-index:9; width:min(420px,92vw);
+    background:#121017; border:1px solid #dbc29155; padding:12px; border-radius:4px;
+    display:flex; flex-direction:column; gap:7px; box-shadow:0 12px 40px #000; }
+  .apane #aoffset { flex:1 1 150px; min-width:120px; }
+  .arow { display:flex; gap:8px; align-items:center; }
+  .arow span { min-width:88px; color:#dbc291; }
+  .arow input[type=range] { flex:1; }
+  .arow button { padding:3px 7px; font-size:11px; }
 </style>
 </head>
 <body>
@@ -49,8 +59,19 @@
   <button id="speed">1×</button>
   <button id="mode">字符</button>
   <button id="chase" title="掉帧时是否跳帧追上时间轴">追帧</button>
+  <button id="sound" title="浏览器可能拦截有声自动播放，点一下解锁">🔇 开声音</button>
   <button id="shot">截 PNG</button>
   <button id="full">全屏</button>
+
+  <details id="atracks" hidden>
+    <summary>音轨 <span id="acount">0</span></summary>
+    <div class="apane">
+      <label class="hint">音画 <input id="aoffset" type="range" min="-500" max="500" step="10" value="0"></label>
+      <span id="aofflab" class="hint">0 ms</span>
+      <div id="alist"></div>
+      <div class="hint">★ = 主时钟（帧索引跟着它走）· 每条轨音量独立 · 可用 attach-audio 叠加多路</div>
+    </div>
+  </details>
 
   <div class="grp">
     <button id="zout" title="缩小">−</button>
@@ -86,6 +107,92 @@ let frame = 0, playing = false, speed = 1, blockMode = false;
 let lastT = 0, acc = 0, raf = 0;
 let chase = false;
 let CELL_W = 8, CELL_H = 16;
+
+// ---- 旁路音轨 ------------------------------------------------------------
+// 画面数据在 chunks/，声音在 audio/，两者只通过 meta.audio.tracks[] 关联。
+// 有音轨时丢弃 performance.now() 自数时间轴，改用 master 轨的 currentTime
+// 当主时钟 —— 音画天然同步，拖帧 / 变速 / 解码抖动都不会漂。
+// 老产物没有 meta.audio：完全走下面的旧时钟，零回归。
+let AUD = [], masterEl = null, masterIdx = 0, muted = false;
+let offsetSec = (parseInt(QS.get('offset') || '0', 10) || 0) / 1000;  // ?offset=-120（毫秒）
+
+function setMuted(v) {
+  muted = v;
+  for (const a of AUD) a.el.muted = v;
+  const b = $('#sound');
+  b.textContent = v ? '🔇 开声音' : '🔊 有声';
+  b.classList.toggle('on', !v);
+  b.title = v ? '浏览器拦截了有声自动播放，点一下解锁' : '点一下静音（画面继续走）';
+}
+
+function setupAudio() {
+  const A = M.audio;
+  if (!A || !Array.isArray(A.tracks) || !A.tracks.length) {
+    $('#sound').hidden = true; $('#atracks').hidden = true;
+    return false;
+  }
+  masterIdx = Math.max(0, Math.min(A.tracks.length - 1, A.master | 0));
+  AUD = A.tracks.map((t, i) => {
+    const el = new Audio();
+    el.src = urlOf(t.file);            // ?src= 远程域名时同样生效
+    el.preload = 'auto';
+    el.loop = true;                    // 画面循环播放，各轨独立循环
+    el.volume = Math.max(0, Math.min(1, Number(t.gain ?? 1)));
+    try { el.playbackRate = speed; } catch (_) {}
+    return { el, t, i };
+  });
+  masterEl = AUD[masterIdx].el;
+  // 主时钟由音频给出，「追帧/平滑」是纯画面时钟的开关，这里没有意义
+  $('#chase').hidden = true;
+  $('#acount').textContent = String(AUD.length);
+  $('#atracks').hidden = false;
+  const box = $('#alist'); box.innerHTML = '';
+  AUD.forEach(({ el, t, i }) => {
+    const row = document.createElement('div'); row.className = 'arow';
+    const lab = document.createElement('span');
+    lab.textContent = t.id + (i === masterIdx ? ' ★' : '');
+    const sl = document.createElement('input');
+    sl.type = 'range'; sl.min = '0'; sl.max = '2'; sl.step = '0.05';
+    sl.value = String(t.gain ?? 1);
+    sl.oninput = () => { const g = Math.max(0, Math.min(1, +sl.value)); el.volume = g; t.gain = +sl.value; };
+    const mb = document.createElement('button');
+    mb.textContent = '静音'; mb.dataset.mute = '0';
+    mb.onclick = () => {
+      const on = mb.dataset.mute !== '1';
+      mb.dataset.mute = on ? '1' : '0';
+      mb.textContent = on ? '恢复' : '静音';
+      mb.classList.toggle('on', on);
+      el.muted = on || muted;
+    };
+    row.append(lab, sl, mb); box.appendChild(row);
+  });
+  $('#aoffset').value = String(Math.round(offsetSec * 1000));
+  $('#aofflab').textContent = Math.round(offsetSec * 1000) + ' ms';
+  return true;
+}
+
+function syncAudioToFrame() {
+  if (!masterEl) return;
+  // t.offset = 该轨相对主时钟的延迟（秒）：BGM 想晚 1.5s 进就填 1.5
+  const base = frame / M.fps - offsetSec;
+  AUD.forEach(({ el, t, i }) => {
+    const target = Math.max(0, base - (Number(t.offset) || 0) * (i === masterIdx ? 0 : 1));
+    try { if (Math.abs(el.currentTime - target) > 0.04) el.currentTime = target; } catch (_) {}
+  });
+}
+
+function audioPlay() {
+  if (!masterEl) return Promise.resolve();
+  return Promise.all(AUD.map(a => Promise.resolve(a.el.play()).catch(e => e))).then(rs => {
+    const blocked = rs.some(r => r instanceof Error);
+    if (blocked) {                       // 没手势时浏览器只放行静音自动播放
+      setMuted(true);
+      return Promise.all(AUD.map(a => Promise.resolve(a.el.play()).catch(() => {})));
+    }
+    setMuted(QS.get('mute') === '1');
+    return null;
+  });
+}
 
 // ---- 显示倍率 ------------------------------------------------------------
 // 旧版把 W 列强行压进屏幕宽（每字符常只有 2px、font 3.68px），字根本画不出来，
@@ -303,7 +410,9 @@ function draw(f) {
   const rate = fpsValue ? fpsValue.toFixed(1) : '…';
   $('#stat').textContent = '帧 ' + (f+1) + '/' + M.frames + '  ' + (f / M.fps).toFixed(1) + 's' +
     '  ·  渲染 ' + rate + '/' + M.fps.toFixed(0) + 'fps' +
-    '  ·  ' + cache.size + '/' + MAX_CACHE + ' 块' + (chase ? ' · 追帧' : '');
+    '  ·  ' + cache.size + '/' + MAX_CACHE + ' 块' +
+    (masterEl ? '  ·  ' + (muted ? '🔇' : '🔊') + ' ' + AUD.length + ' 轨' : '') +
+    (chase && !masterEl ? ' · 追帧' : '');
 }
 
 // 只保留「最新一帧」的绘制请求：fetch/解压慢时不排队，避免越积越卡。
@@ -325,6 +434,18 @@ function requestDraw(f) {
 function tick(t) {
   raf = requestAnimationFrame(tick);
   if (!playing || !M) return;
+  if (masterEl) {
+    // 音频主时钟：帧索引直接由 master.currentTime 换算，不再靠 rAF 累加。
+    // 浏览器解码慢、掉帧、切后台都不会让音画错位。
+    const f = Math.max(0, Math.min(M.frames - 1,
+      Math.floor((masterEl.currentTime + offsetSec) * M.fps)));
+    if (f !== frame) {
+      frame = f;
+      requestDraw(frame);
+      ensureChunk((Math.floor(frame / M.chunkFrames) + 1) % M.chunks).catch(() => {});
+    }
+    return;
+  }
   if (!lastT) lastT = t;
   acc += (t - lastT) * speed;
   lastT = t;
@@ -387,21 +508,46 @@ async function main() {
   $('#mode').textContent = blockMode ? '色块' : '字符';
   await ensureChunk(0);
   applySize();
+  const hasAudio = setupAudio();
   window.addEventListener('resize', () => { if (fit) applySize(); });
   raf = requestAnimationFrame(tick);
   playing = true;
+  $('#play').textContent = '⏸ 暂停';
+  if (hasAudio) audioPlay();           // 被浏览器拦有声会自动降级静音，按钮会提示
 }
 
 $('#play').onclick = () => {
   playing = !playing; lastT = 0;
   $('#play').textContent = playing ? '⏸ 暂停' : '▶ 播放';
   $('#play').classList.toggle('on', !playing);
+  if (masterEl) {
+    if (!playing) AUD.forEach(a => a.el.pause());
+    else audioPlay();
+  }
 };
 const SPEEDS = [1, 2, 4, 0.5];
 let si = 0;
-$('#speed').onclick = () => { si = (si + 1) % SPEEDS.length; speed = SPEEDS[si]; $('#speed').textContent = speed + '×'; };
+$('#speed').onclick = () => {
+  si = (si + 1) % SPEEDS.length; speed = SPEEDS[si]; $('#speed').textContent = speed + '×';
+  if (masterEl) AUD.forEach(a => { try { a.el.playbackRate = speed; } catch (_) {} });
+};
 $('#mode').onclick = () => { blockMode = !blockMode; $('#mode').textContent = blockMode ? '色块' : '字符'; draw(frame); };
-$('#seek').oninput = e => { frame = +e.target.value; const n = Math.floor(frame / M.chunkFrames); ensureChunk(n).then(() => draw(frame)); };
+$('#seek').oninput = e => {
+  frame = +e.target.value;
+  const n = Math.floor(frame / M.chunkFrames);
+  ensureChunk(n).then(() => draw(frame));
+  if (masterEl) syncAudioToFrame();
+};
+$('#sound').onclick = () => {
+  if (!masterEl) return;
+  setMuted(!muted);
+  if (playing) AUD.forEach(a => Promise.resolve(a.el.play()).catch(() => {}));
+};
+$('#aoffset').oninput = e => {
+  offsetSec = (+e.target.value) / 1000;
+  $('#aofflab').textContent = e.target.value + ' ms';
+  if (masterEl) draw(frame);
+};
 $('#shot').onclick = () => { const a = document.createElement('a'); a.download = 'frame_' + frame + '.png'; a.href = cv.toDataURL('image/png'); a.click(); };
 $('#full').onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); else stage.requestFullscreen().then(() => { if (fit) applySize(); }); };
 $('#zin').onclick = () => zoomStep(1);
@@ -416,9 +562,14 @@ $('#zfit').onclick = () => {
 $('#gain').oninput = e => { gain = parseFloat(e.target.value); draw(frame); };
 $('#chase').onclick = () => { chase = !chase; $('#chase').classList.toggle('on', chase); $('#chase').textContent = chase ? '平滑' : '追帧'; };
 document.addEventListener('keydown', e => {
+  if (!M) return;
   if (e.code === 'Space') { e.preventDefault(); $('#play').click(); }
-  if (e.code === 'ArrowRight') { frame = (frame + 1) % M.frames; ensureChunk(Math.floor(frame / M.chunkFrames)).then(() => draw(frame)); }
-  if (e.code === 'ArrowLeft')  { frame = (frame - 1 + M.frames) % M.frames; ensureChunk(Math.floor(frame / M.chunkFrames)).then(() => draw(frame)); }
+  if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
+    frame = (frame + (e.code === 'ArrowRight' ? 1 : -1) + M.frames) % M.frames;
+    ensureChunk(Math.floor(frame / M.chunkFrames)).then(() => draw(frame));
+    if (masterEl) syncAudioToFrame();
+  }
+  if (e.key === 'm' || e.key === 'M') $('#sound').click();
   if (e.key === '+' || e.key === '=') zoomStep(1);
   if (e.key === '-') zoomStep(-1);
 });

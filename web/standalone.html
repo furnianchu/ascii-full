@@ -44,6 +44,15 @@
   #zlabel { color:var(--dim); font-size:11px; min-width:74px; }
   #err { display:none; margin:0 18px 12px; padding:10px 12px; border:1px solid #7a2748;
     background:#1c1019; color:#ffb3d2; font-size:12px; border-radius:6px; }
+  details#atracks { font-size:12px; color:var(--dim); }
+  details#atracks summary { cursor:pointer; border:1px solid var(--line); padding:6px 12px; border-radius:6px; }
+  .apane { position:absolute; bottom:62px; left:18px; z-index:9; width:min(420px,92vw);
+    background:var(--panel); border:1px solid var(--line); padding:12px; border-radius:6px;
+    display:flex; flex-direction:column; gap:8px; box-shadow:0 12px 40px #000; }
+  .arow { display:flex; gap:8px; align-items:center; }
+  .arow span { min-width:88px; color:var(--gold); }
+  .arow input[type=range] { flex:1; accent-color:var(--ink); }
+  .arow button { padding:3px 8px; font-size:11px; }
 </style>
 </head>
 <body>
@@ -73,8 +82,19 @@
   <button id="speed">1×</button>
   <button id="mode">字符</button>
   <button id="chase" title="掉帧时是否跳帧追上时间轴">追帧</button>
+  <button id="sound" title="浏览器可能拦截有声自动播放，点一下解锁">🔇 开声音</button>
   <button id="shot">截 PNG</button>
   <button id="full">全屏</button>
+
+  <details id="atracks" hidden>
+    <summary>音轨 <span id="acount">0</span></summary>
+    <div class="apane">
+      <label class="hint">音画 <input id="aoffset" type="range" min="-500" max="500" step="10" value="0"></label>
+      <span id="aofflab" class="hint">0 ms</span>
+      <div id="alist"></div>
+      <div class="hint">★ = 主时钟 · 每条轨音量独立 · 可用 attach-audio 叠加多路</div>
+    </div>
+  </details>
 
   <div class="grp">
     <button id="zout" title="缩小">−</button>
@@ -93,7 +113,8 @@
 const $ = s => document.querySelector(s);
 const cv = $('#cv'), ctx = cv.getContext('2d', { alpha:false });
 const drop = $('#drop'), stage = $('#stage');
-const MAX_CACHE = Math.max(2, parseInt(new URLSearchParams(location.search).get('cache') || '6', 10) || 6);
+const QS = new URLSearchParams(location.search);
+const MAX_CACHE = Math.max(2, parseInt(QS.get('cache') || '6', 10) || 6);
 
 let M = null, chunkMap = new Map(), cache = new Map(), pending = new Map();
 let frame = 0, playing = false, speed = 1, blockMode = false;
@@ -103,6 +124,84 @@ let chase = false;
 const BASE_CW = 8;
 const ZOOMS = [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8];
 let zoom = 1, fit = false, gain = 1;
+
+// ---- 旁路音轨：从用户选中的目录里读 audio/ 下的文件，blob: URL 直接播 ----
+let AUD = [], masterEl = null, masterIdx = 0, muted = false;
+let offsetSec = (parseInt(QS.get('offset') || '0', 10) || 0) / 1000;
+
+function setMuted(v) {
+  muted = v;
+  for (const a of AUD) a.el.muted = v;
+  const b = $('#sound');
+  b.textContent = v ? '🔇 开声音' : '🔊 有声';
+  b.classList.toggle('on', !v);
+}
+function setupAudio(audioFiles) {
+  AUD.forEach(a => { try { URL.revokeObjectURL(a.el.src); } catch (_) {} });
+  AUD = []; masterEl = null;
+  const A = M.audio;
+  if (!A || !Array.isArray(A.tracks) || !A.tracks.length) {
+    $('#sound').hidden = true; $('#atracks').hidden = true; $('#chase').hidden = false;
+    return false;
+  }
+  masterIdx = Math.max(0, Math.min(A.tracks.length - 1, A.master | 0));
+  AUD = A.tracks.map((t, i) => {
+    const key = String(t.file || '').replace(/^audio\//, '');
+    const f = audioFiles.get(key);
+    const el = new Audio();
+    if (f) el.src = URL.createObjectURL(f);
+    el.preload = 'auto'; el.loop = true;
+    el.volume = Math.max(0, Math.min(1, Number(t.gain ?? 1)));
+    try { el.playbackRate = speed; } catch (_) {}
+    return { el, t, i, missing: !f };
+  });
+  masterEl = AUD[masterIdx].el;
+  $('#chase').hidden = true;
+  $('#acount').textContent = String(AUD.length);
+  $('#atracks').hidden = false;
+  const box = $('#alist'); box.innerHTML = '';
+  AUD.forEach(({ el, t, i, missing }) => {
+    const row = document.createElement('div'); row.className = 'arow';
+    const lab = document.createElement('span');
+    lab.textContent = (missing ? '⚠ ' : '') + t.id + (i === masterIdx ? ' ★' : '');
+    const sl = document.createElement('input');
+    sl.type = 'range'; sl.min = '0'; sl.max = '2'; sl.step = '0.05'; sl.value = String(t.gain ?? 1);
+    sl.oninput = () => { el.volume = Math.max(0, Math.min(1, +sl.value)); t.gain = +sl.value; };
+    const mb = document.createElement('button');
+    mb.textContent = '静音'; mb.dataset.mute = '0';
+    mb.onclick = () => {
+      const on = mb.dataset.mute !== '1';
+      mb.dataset.mute = on ? '1' : '0'; mb.textContent = on ? '恢复' : '静音';
+      el.muted = on || muted;
+    };
+    row.append(lab, sl, mb); box.appendChild(row);
+  });
+  $('#aoffset').value = String(Math.round(offsetSec * 1000));
+  $('#aofflab').textContent = Math.round(offsetSec * 1000) + ' ms';
+  if (AUD.some(a => a.missing)) {
+    $('#meta').textContent += '  ⚠ 有音轨文件没选进来（请选含 audio/ 的整个产物文件夹）';
+  }
+  return true;
+}
+function syncAudioToFrame() {
+  if (!masterEl) return;
+  const base = frame / M.fps - offsetSec;
+  AUD.forEach(({ el, t, i }) => {
+    const target = Math.max(0, base - (Number(t.offset) || 0) * (i === masterIdx ? 0 : 1));
+    try { if (Math.abs(el.currentTime - target) > 0.04) el.currentTime = target; } catch (_) {}
+  });
+}
+function audioPlay() {
+  if (!masterEl) return Promise.resolve();
+  return Promise.all(AUD.map(a => Promise.resolve(a.el.play()).catch(e => e))).then(rs => {
+    if (rs.some(r => r instanceof Error)) {
+      setMuted(true);
+      return Promise.all(AUD.map(a => Promise.resolve(a.el.play()).catch(() => {})));
+    }
+    setMuted(QS.get('mute') === '1');
+    return null;
+  });
+}
 
 function fail(msg) {
   $('#err').style.display = 'block';
@@ -327,7 +426,9 @@ function draw(f) {
   const rate = fpsValue ? fpsValue.toFixed(1) : '…';
   $('#stat').textContent = '帧 ' + (f+1) + '/' + M.frames + '  ' + (f / M.fps).toFixed(1) + 's' +
     '  ·  渲染 ' + rate + '/' + M.fps.toFixed(0) + 'fps' +
-    '  ·  ' + cache.size + '/' + MAX_CACHE + ' 块' + (chase ? ' · 追帧' : '');
+    '  ·  ' + cache.size + '/' + MAX_CACHE + ' 块' +
+    (masterEl ? '  ·  ' + (muted ? '🔇' : '🔊') + ' ' + AUD.length + ' 轨' : '') +
+    (chase && !masterEl ? ' · 追帧' : '');
 }
 
 // 只保留「最新一帧」的绘制请求：fetch/解压慢时不排队，避免越积越卡。
@@ -349,6 +450,16 @@ function requestDraw(f) {
 function tick(t) {
   raf = requestAnimationFrame(tick);
   if (!playing || !M) return;
+  if (masterEl) {
+    const f = Math.max(0, Math.min(M.frames - 1,
+      Math.floor((masterEl.currentTime + offsetSec) * M.fps)));
+    if (f !== frame) {
+      frame = f;
+      requestDraw(frame);
+      ensureChunk((Math.floor(frame / M.chunkFrames) + 1) % M.chunks).catch(() => {});
+    }
+    return;
+  }
   if (!lastT) lastT = t;
   acc += (t - lastT) * speed;
   lastT = t;
@@ -367,11 +478,13 @@ function tick(t) {
 async function load(files) {
   $('#err').style.display = 'none';
   let metaFile = null;
-  const found = new Map();
+  const found = new Map(), audioFiles = new Map();
   for (const { file, path } of files) {
     if (/meta\.json$/i.test(path)) metaFile = file;
     const m = /(?:^|\/)chunks\/(c_\d+\.gz)$/.exec(path);
     if (m) found.set(m[1], file);
+    const am = /(?:^|\/)audio\/([^/]+)$/.exec(path);
+    if (am) audioFiles.set(am[1], file);
   }
   if (!metaFile) { fail('没找到 meta.json —— 请选整个产物目录，或单独选 meta.json。'); return; }
   if (!found.size) { fail('没找到 chunks/*.gz —— 请选包含 chunks 子目录的整个产物文件夹。'); return; }
@@ -389,8 +502,10 @@ async function load(files) {
   stage.style.display = 'block';
   await ensureChunk(0);
   resize();
+  const hasAudio = setupAudio(audioFiles);
   playing = true;
   $('#play').textContent = '⏸ 暂停';
+  if (hasAudio) audioPlay();
 }
 
 $('#pickDir').onchange = e => load([...e.target.files].map(f => ({ file:f, path: f.webkitRelativePath || f.name })));
@@ -414,14 +529,31 @@ $('#play').onclick = () => {
   playing = !playing; lastT = 0;
   $('#play').textContent = playing ? '⏸ 暂停' : '▶ 播放';
   $('#play').classList.toggle('on', !playing);
+  if (masterEl) {
+    if (!playing) AUD.forEach(a => a.el.pause());
+    else audioPlay();
+  }
 };
 const SPEEDS = [1, 2, 4, 0.5];
 let si = 0;
-$('#speed').onclick = () => { si = (si + 1) % SPEEDS.length; speed = SPEEDS[si]; $('#speed').textContent = speed + '×'; };
+$('#speed').onclick = () => {
+  si = (si + 1) % SPEEDS.length; speed = SPEEDS[si]; $('#speed').textContent = speed + '×';
+  if (masterEl) AUD.forEach(a => { try { a.el.playbackRate = speed; } catch (_) {} });
+};
 $('#mode').onclick = () => { blockMode = !blockMode; $('#mode').textContent = blockMode ? '色块' : '字符'; draw(frame); };
 $('#seek').oninput = e => {
   frame = +e.target.value;
   ensureChunk(Math.floor(frame / M.chunkFrames)).then(() => draw(frame)).catch(err => fail(String(err)));
+  if (masterEl) syncAudioToFrame();
+};
+$('#sound').onclick = () => {
+  if (!masterEl) return;
+  setMuted(!muted);
+  if (playing) AUD.forEach(a => Promise.resolve(a.el.play()).catch(() => {}));
+};
+$('#aoffset').oninput = e => {
+  offsetSec = (+e.target.value) / 1000;
+  $('#aofflab').textContent = e.target.value + ' ms';
 };
 $('#shot').onclick = () => {
   const a = document.createElement('a');
@@ -478,7 +610,9 @@ document.addEventListener('keydown', e => {
   if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
     frame = (frame + (e.code === 'ArrowRight' ? 1 : -1) + M.frames) % M.frames;
     ensureChunk(Math.floor(frame / M.chunkFrames)).then(() => draw(frame));
+    if (masterEl) syncAudioToFrame();
   }
+  if (e.key === 'm' || e.key === 'M') $('#sound').click();
   if (e.key === '+' || e.key === '=') zoomStep(1);
   if (e.key === '-') zoomStep(-1);
 });

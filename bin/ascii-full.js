@@ -48,6 +48,23 @@ const TO = opt('to', null) === null ? null : parseFloat(opt('to', '0'));
 const HALF = FLAG('half');                                       // ▀ 上下双色
 const RAMP_MODE = String(opt('ramp', '70'));
 const FORCE = FLAG('force');
+
+// ---- 音频：旁路单轨，格式从第一天就是 tracks[]，方便后期叠加多路 ----
+// 画面进 chunks/，声音进 audio/，两条路彻底独立。默认不抽（老产物零变化）；
+// --audio 显式开启；已有产物想补/叠加用 bin/attach-audio.js，不必重转画面。
+const AUDIO = FLAG('audio') && !FLAG('no-audio');
+const AUDIO_CODEC = String(opt('audio-codec', 'opus')).toLowerCase();
+const AUDIO_BITRATE = String(opt('audio-bitrate', '48k'));
+const AUDIO_ID = String(opt('audio-id', 'main')).replace(/[^A-Za-z0-9_-]/g, '_');
+const AUDIO_SPEC = {
+  opus: { ext: 'webm', enc: 'libopus',    ar: '48000', mime: 'audio/webm; codecs=opus' },
+  mp3:  { ext: 'mp3',  enc: 'libmp3lame', ar: '44100', mime: 'audio/mpeg' },
+  pcm:  { ext: 'wav',  enc: 'pcm_s16le',  ar: '22050', mime: 'audio/wav' },
+};
+if (AUDIO && !AUDIO_SPEC[AUDIO_CODEC]) {
+  console.error('✗ 不支持的音频编码: ' + AUDIO_CODEC + '（opus / mp3 / pcm）');
+  process.exit(1);
+}
 const HELP = FLAG('help');
 const VERSION = FLAG('version') || FLAG('V');
 
@@ -99,7 +116,18 @@ if (HELP) {
   --chunk N        每个 gzip 块装几帧，默认 60
   --ramp 10|70     灰度级数，默认 70
   --half           用 ▀ 上下各带一色，垂直分辨率翻倍（体积约 1.75×）
-  --force          产物已存在时清空重跑（只清 chunks/ 与 meta.json）
+  --force          产物已存在时清空重跑（清 chunks/ 与 meta.json，及 meta 里登记的音轨）
+
+音频（旁路，默认关闭 —— 画面格式与老产物完全兼容）:
+  --audio          从源片抽一条主音轨到 audio/main.webm，播放器以它为主时钟
+  --audio-codec C  opus(默认) / mp3 / pcm
+  --audio-bitrate R  默认 48k（pcm 忽略）
+  --audio-id NAME  默认 main
+  --no-audio       显式关闭（即使别处写了 --audio）
+  补音轨 / 叠 BGM / 多语种，不重转画面:
+  node bin/attach-audio.js --out DIR --src VIDEO
+  node bin/attach-audio.js --out DIR --file bgm.m4a --id bgm --gain .6
+  音轨是 meta.audio.tracks[] 数组，各自带 gain / offset / role。
 
 启动外观 / 日志:
   --logo TEXT      启动大字的文字，默认 "ASCII FULL"（A-Z 0-9 与常用符号）
@@ -142,13 +170,28 @@ for (const [label, bin] of [['ffmpeg', FFMPEG], ['ffprobe', FFPROBE]]) {
 }
 
 const metaPath = path.join(OUT, 'meta.json');
+// 重跑画面时，attach-audio --file 后期挂的 BGM/解说要原样继承下来，
+// 不能因为一次 --force 就让用户重新挂一遍。
+let keptAudioTracks = [];
 if (fs.existsSync(metaPath) && !FORCE) {
   console.error('✗ 已存在 meta.json。确认要重跑请加 --force，或换 --out 目录。');
   process.exit(1);
 }
 if (FORCE && fs.existsSync(OUT)) {
-  // 只清自己生成的产物，别把用户 cp 进来的 player.html 一起删了
+  // 只清自己生成的产物，别把用户 cp 进来的 player.html 一起删了。
+  // 音轨也只删 meta 里登记过的那些 —— 用户后期 --file 自挂的 BGM 不该被重转抹掉。
+  let oldTracks = [];
+  try {
+    const old = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    if (old.audio && Array.isArray(old.audio.tracks)) oldTracks = old.audio.tracks;
+  } catch {}
+  keptAudioTracks = oldTracks.filter(t => t && t.source === 'file');
   fs.rmSync(path.join(OUT, 'chunks'), { recursive: true, force: true });
+  for (const t of oldTracks) {
+    if (t && t.source === 'file') continue;       // 外部挂的音频保留
+    const rel = String((t && t.file) || '');
+    if (/^audio\/[A-Za-z0-9._-]+$/.test(rel)) fs.rmSync(path.join(OUT, rel), { force: true });
+  }
   fs.rmSync(metaPath, { force: true });
 }
 fs.mkdirSync(path.join(OUT, 'chunks'), { recursive: true });
@@ -168,6 +211,26 @@ function parseFps(s) { const m = /^(\d+)\/(\d+)$/.exec(s || ''); return m ? (+m[
 const srcFps = parseFps(st.r_frame_rate) || parseFps(st.avg_frame_rate) || 24;
 const FPS = FPS_OVERRIDE ? parseFloat(FPS_OVERRIDE) : srcFps;
 if (!(FPS > 0 && FPS <= 120)) { console.error('✗ 帧率异常: ' + FPS); process.exit(1); }
+
+// 只问「有没有音轨」，不解码、不改画面管线。--map 0:a:0 在无音轨时会直接失败，
+// 所以先探一次，缺音轨时产出静音产物并给提示，而不是整次转码报错。
+let srcAudio = null;
+if (AUDIO) {
+  const ap = spawnSync(FFPROBE, ['-v', 'error', '-select_streams', 'a:0',
+    '-show_entries', 'stream=codec_name,sample_rate,channels,duration', '-of', 'json', SRC],
+  { encoding: 'utf8' });
+  if (ap.status === 0) {
+    try {
+      const a = JSON.parse(ap.stdout).streams[0];
+      srcAudio = {
+        codec: a.codec_name || 'unknown',
+        sampleRate: parseInt(a.sample_rate, 10) || 0,
+        channels: parseInt(a.channels, 10) || 0,
+        duration: parseFloat(a.duration || '0') || dur,
+      };
+    } catch {}
+  }
+}
 
 // 等宽字体字符格约 1:2（宽:高），还原源片比例需要 W/(2H) = srcW/srcH
 let W = Math.max(8, Math.round(2 * (srcW / srcH) * GRID_H));
@@ -203,6 +266,9 @@ log.startup([
   ['帧来源', INTERP && FPS > srcFps ? `minterpolate 运动补偿插帧（源片 ${srcFps.toFixed(3)}fps）`
             : FPS > srcFps ? `⚠ 高于源片，ffmpeg 复制帧填充（不增加信息）` : '源片原生帧率，无丢帧'],
   ['每帧', `${(outFrameBytes / 1024).toFixed(0)} KB   原始总计约 ${(estFrames * outFrameBytes / 1048576).toFixed(0)} MB`],
+  ['音轨', !AUDIO ? '未抽取（--audio 开启；老产物可用 attach-audio 补）'
+            : !srcAudio ? '⚠ 源片无 a:0，产物将静音'
+            : `${AUDIO_CODEC} ${AUDIO_BITRATE}  ${srcAudio.codec} ${srcAudio.sampleRate}Hz ${srcAudio.channels}ch  → audio/${AUDIO_ID}.${AUDIO_SPEC[AUDIO_CODEC].ext}`],
   ['ffmpeg', FFMPEG],
 ]);
 log.stage('开始解码');
@@ -303,6 +369,45 @@ ff.on('close', code => {
   flushChunk(true);
   if (!frames) { console.error('✗ 一帧都没解码出来，检查 --from/--to 或源片'); process.exit(1); }
 
+  // 音轨在画面流彻底结束后才抽：spawnSync 会阻塞事件循环，并行跑会让
+  // ff.stdout 的数据堆在内存里。抽音轨只要一两秒，放最后最稳。
+  let audioTrack = null;
+  if (AUDIO && srcAudio) {
+    const spec = AUDIO_SPEC[AUDIO_CODEC];
+    const fileName = AUDIO_ID + '.' + spec.ext;
+    const dst = path.join(OUT, 'audio', fileName);
+    fs.mkdirSync(path.join(OUT, 'audio'), { recursive: true });
+    const aArgs = ['-v', 'error', '-ss', String(t0)];
+    if (TO !== null && t1 > t0) aArgs.push('-t', String(t1 - t0));
+    aArgs.push('-i', SRC, '-vn', '-map', '0:a:0',
+      '-c:a', spec.enc, '-ac', '2', '-ar', spec.ar);
+    if (AUDIO_CODEC !== 'pcm') aArgs.push('-b:a', AUDIO_BITRATE);
+    aArgs.push('-y', dst);
+    const ar = spawnSync(FFMPEG, aArgs, { encoding: 'utf8' });
+    if (ar.status !== 0) {
+      log.warn('抽音轨失败（画面不受影响）: ' + String(ar.stderr || '').trim().slice(0, 300));
+    } else {
+      const dp = spawnSync(FFPROBE, ['-v', 'error', '-select_streams', 'a:0',
+        '-show_entries', 'stream=codec_name,sample_rate,channels,duration',
+        '-show_entries', 'format=duration', '-of', 'json', dst], { encoding: 'utf8' });
+      let pd = {};
+      try { const j = JSON.parse(dp.stdout); pd = j.streams[0] || {}; } catch {}
+      audioTrack = {
+        id: AUDIO_ID, file: 'audio/' + fileName,
+        codec: AUDIO_CODEC, mime: spec.mime,
+        sampleRate: parseInt(pd.sample_rate, 10) || parseInt(spec.ar, 10),
+        channels: parseInt(pd.channels, 10) || 2,
+        duration: parseFloat(pd.duration || '0') || (t1 - t0),
+        bitrate: AUDIO_CODEC === 'pcm' ? null : AUDIO_BITRATE,
+        srcStart: t0, offset: 0, gain: 1,
+        role: 'master', source: 'video',
+      };
+      log.stage('旁路音轨已写入 audio/' + fileName);
+    }
+  } else if (AUDIO && !srcAudio) {
+    log.warn('源片没有音轨 a:0 —— 产物静音；可用 attach-audio.js --file 后挂');
+  }
+
   const meta = {
     magic: 'ASCFULL1', version: 1,
     src: path.basename(SRC), srcW, srcH, srcCodec: st.codec_name, srcDuration: dur, srcFps,
@@ -312,6 +417,15 @@ ff.on('close', code => {
     frames, chunks: chunkNo, from: t0, to: t1,
     generatedAt: new Date().toISOString(),
   };
+  // 音频是 tracks[] 而不是单个文件：第一条为 master 主时钟，其余为 overlay，
+  // 每条自带 gain / offset / role。后期叠 BGM、解说、多语种只往数组追加即可。
+  // --force 重转画面时，source:'file' 的外部音轨原样继承，不用重新挂。
+  const allTracks = audioTrack ? [audioTrack] : [];
+  for (const t of keptAudioTracks) allTracks.push(t);
+  if (AUDIO || allTracks.length) {
+    allTracks.forEach((t, i) => { t.role = i === 0 ? 'master' : 'overlay'; });
+    meta.audio = { version: 1, master: 0, tracks: allTracks };
+  }
   fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
 
   // 播放器随产物一起走：服务起在 OUT，而 player.html 在仓库的 web/ 下，
@@ -333,12 +447,17 @@ ff.on('close', code => {
     `每字符    : ${bytesPerCell} B（1 索引 + ${meta.colors * 3} RGB）`,
     `数据精度  : 全帧率 / ${RAMP.length} 级 / ${HALF ? '上下双色' : '每字符独立 24-bit 色'} / 无帧间差分`,
     `帧来源    : ${INTERP && FPS > srcFps ? '运动补偿插帧' : FPS > srcFps ? '复制帧（不增加信息）' : '源片原生'}（源片 ${srcFps.toFixed(3)}fps → ${FPS.toFixed(3)}fps）`,
+    `音轨      : ${meta.audio
+                  ? `${meta.audio.tracks.length} 条（主时钟 ${meta.audio.tracks[0] ? meta.audio.tracks[0].id : '—'}）` +
+                    (audioTrack ? `  新抽 ${audioTrack.codec} ${audioTrack.sampleRate}Hz  ${(fs.statSync(path.join(OUT, audioTrack.file)).size / 1024).toFixed(0)} KB` : '  ⚠ 本次未抽到主音轨') +
+                    (keptAudioTracks.length ? `  · 继承 ${keptAudioTracks.length} 条外部叠加轨` : '')
+                  : '未抽取（--audio 开启；可用 attach-audio 补而不重转）'}`,
     `播放器    : ${playerCopied ? '已自动放入输出目录 ✓' : '⚠ 仓库 web/player.html 缺失，需手动复制一份'}`,
   ]);
   console.log('');
   console.log('  下一步（纯本地，无需联网）：');
-  console.log(`    ascii-full-serve "${OUT}"`);
+  console.log(`    ascii-full-serve "${OUT}" --open`);
   console.log(`    # 或: cd "${OUT}" && python3 -m http.server 8080`);
-  console.log('    浏览器开 http://localhost:8080/player.html');
+  console.log('    浏览器开 http://127.0.0.1:8080/  （根路径直接进播放器）');
   log.close();
 });

@@ -1,9 +1,20 @@
 # generated output
 ascii-out/
 chunks/
+audio/
 *.gz
 sample.mp4
 *.asc
+
+# 旁路音轨（v1.4 起画面与声音分开，音频同样是产物不是源码）
+*.webm
+*.opus
+*.ogg
+*.mp3
+*.m4a
+*.aac
+*.wav
+*.flac
 
 # node
 node_modules/

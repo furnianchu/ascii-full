@@ -61,6 +61,11 @@ const MIME = {
   '.gz': 'application/octet-stream', '.png': 'image/png',
   '.svg': 'image/svg+xml', '.txt': 'text/plain; charset=utf-8',
   '.log': 'text/plain; charset=utf-8',
+  // 旁路音轨：与 bin/serve.js 保持一致。<audio> 拖进度会带 Range，
+  // 没有正确 MIME 时 Chromium 会拒绝解码，没有 206 则拖不动。
+  '.webm': 'audio/webm', '.opus': 'audio/ogg', '.ogg': 'audio/ogg',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac', '.flac': 'audio/flac',
 };
 
 /** 给产物目录起一个仅本机可访问的临时服务，供内置播放器窗口读取 .gz */
@@ -77,10 +82,38 @@ function serveDir(dir) {
       if (file !== root && !file.startsWith(root + path.sep)) { res.writeHead(403).end('Forbidden'); return; }
       fs.stat(file, (err, st) => {
         if (err || !st.isFile()) { res.writeHead(404).end('Not found'); return; }
-        res.writeHead(200, {
-          'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
-          'Content-Length': st.size, 'Cache-Control': 'no-store',
-        });
+        const type = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
+        // 与 bin/serve.js 同一套 Range 逻辑：多条 <audio> 拖进度/起播会发
+        // Range: bytes=…，不回 206 就拖不动；.gz 的 fetch 不带 Range，仍走 200 整块。
+        const baseHeaders = {
+          'Content-Type': type, 'Cache-Control': 'no-store',
+          'Accept-Ranges': 'bytes',
+        };
+        const range = req.headers.range;
+        const m = range && /^bytes=\d*-\d*$/.test(range) ? /^bytes=(\d*)-(\d*)$/.exec(range) : null;
+        if (m) {
+          let start = m[1] ? parseInt(m[1], 10) : 0;
+          let end = m[2] ? parseInt(m[2], 10) : st.size - 1;
+          if (!m[1] && m[2]) {
+            const suffix = parseInt(m[2], 10);
+            start = Math.max(0, st.size - suffix);
+            end = st.size - 1;
+          }
+          end = Math.min(end, st.size - 1);
+          if (!Number.isFinite(start) || start >= st.size || end < start) {
+            res.writeHead(416, { 'Content-Range': `bytes */${st.size}` }).end();
+            return;
+          }
+          res.writeHead(206, {
+            ...baseHeaders,
+            'Content-Length': end - start + 1,
+            'Content-Range': `bytes ${start}-${end}/${st.size}`,
+          });
+          if (req.method === 'HEAD') { res.end(); return; }
+          fs.createReadStream(file, { start, end }).on('error', () => res.destroy()).pipe(res);
+          return;
+        }
+        res.writeHead(200, { ...baseHeaders, 'Content-Length': st.size });
         if (req.method === 'HEAD') { res.end(); return; }
         fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
       });
@@ -108,7 +141,7 @@ app.on('window-all-closed', () => {
 
 ipcMain.handle('app:info', () => ({
   version: (() => {
-    try { return require('./package.json').version; } catch { return '1.2.0'; }
+    try { return require('./package.json').version; } catch { return '1.4.0'; }
   })(),
   platform: process.platform + '-' + process.arch,
   electron: process.versions.electron,
@@ -153,20 +186,31 @@ ipcMain.handle('run:transcode', (_e, o) => {
   const args = [
     CLI,
     '--src', o.src, '--out', o.out,
-    '--grid', String(o.grid || 60),
     '--chunk', String(o.chunk || 60),
     '--ramp', String(o.ramp || '70'),
     '--ffmpeg', ffmpegBin(), '--ffprobe', ffprobeBin(),
     '--logo', String(o.logo || 'ASCII FULL'),
     '--logo-char', String(o.logoChar || '#'),
   ];
+  // --cols 与 --grid 互斥：同时给会让 CLI 认为 GRID_GIVEN=true，
+  // 行数不反算，超采样网格就被压扁。填了列数就只传 --cols。
+  const cols = String(o.cols || '').trim();
+  args.push(cols ? '--cols' : '--grid', cols || String(o.grid || 60));
   if (o.logoFile) args.push('--logo-file', o.logoFile);
   if (o.noLogo) args.push('--no-logo');
   if (o.fps) args.push('--fps', String(o.fps));
+  if (o.interp) args.push('--interp');
   if (o.from !== '' && o.from != null) args.push('--from', String(o.from));
   if (o.to !== '' && o.to != null) args.push('--to', String(o.to));
   if (o.half) args.push('--half');
   if (o.force) args.push('--force');
+  // 声音单独一路（v1.4）：默认关，勾了才抽；不重转画面也能用 attach-audio 补。
+  if (o.audio) {
+    args.push('--audio');
+    if (o.audioCodec) args.push('--audio-codec', String(o.audioCodec));
+    if (o.audioBitrate) args.push('--audio-bitrate', String(o.audioBitrate));
+    if (o.audioId) args.push('--audio-id', String(o.audioId));
+  }
 
   emit('log:line', '$ ascii-full ' + args.slice(1).join(' '));
   child = spawn(process.execPath, args, {

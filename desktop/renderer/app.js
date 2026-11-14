@@ -37,18 +37,32 @@ function collect() {
   return {
     src, out,
     grid: $('#grid').value || 60,
+    cols: $('#cols').value.trim(),
     fps: $('#fps').value.trim(),
     chunk: $('#chunk').value || 60,
     ramp: $('#ramp').value,
     from: $('#from').value.trim(),
     to: $('#to').value.trim(),
     half: $('#half').checked,
+    interp: $('#interp').checked,
     force: $('#force').checked,
+    audio: $('#audio').checked,
+    audioCodec: $('#audioCodec').value,
+    audioBitrate: $('#audioBitrate').value.trim(),
+    audioId: $('#audioId').value.trim(),
     logo: $('#logo').value.trim() || 'ASCII FULL',
     logoChar: $('#logoChar').value || '#',
     noLogo: $('#noLogo').checked,
   };
 }
+
+// 没勾 --audio 时把音频字段灰掉，避免误以为改了会生效
+function syncAudio() {
+  const on = $('#audio').checked;
+  for (const sel of ['#audioCodec', '#audioBitrate', '#audioId']) $(sel).disabled = !on;
+}
+$('#audio').onchange = syncAudio;
+syncAudio();
 
 $('#pickSrc').onclick = async () => { const p = await af.pickVideo(); if (p) $('#src').value = p; };
 $('#pickOut').onclick = async () => {

@@ -65,6 +65,16 @@ const MIME = {
   '.txt':  'text/plain; charset=utf-8',
   '.log':  'text/plain; charset=utf-8',
   '.url':  'text/plain; charset=utf-8',
+  // 旁路音轨。audio/ 下的文件要给浏览器正确 MIME，且支持 Range（见下），
+  // 否则 <audio> 拖进度在移动端会退化成整文件重下或直接播不动。
+  '.webm': 'audio/webm',
+  '.opus': 'audio/ogg',
+  '.ogg':  'audio/ogg',
+  '.mp3':  'audio/mpeg',
+  '.wav':  'audio/wav',
+  '.m4a':  'audio/mp4',
+  '.aac':  'audio/aac',
+  '.flac': 'audio/flac',
 };
 
 function isTermux() {
@@ -154,12 +164,41 @@ const server = http.createServer((req, res) => {
       return;
     }
     const type = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
-    res.writeHead(200, {
+    const baseHeaders = {
       'Content-Type': type,
-      'Content-Length': st.size,
       'Cache-Control': 'no-store',
+      'Accept-Ranges': 'bytes',
       // 故意不写 Content-Encoding: gzip
-    });
+    };
+
+    // <audio> 在拖进度 / 起播时会发 Range: bytes=…，不回 206 会拖不动。
+    // 对 .gz 无影响：播放器的 fetch 不带 Range，仍走下面 200 整块。
+    const range = req.headers.range;
+    const m = range && /^bytes=\d*-\d*$/.test(range) ? /^bytes=(\d*)-(\d*)$/.exec(range) : null;
+    if (m) {
+      let start = m[1] ? parseInt(m[1], 10) : 0;
+      let end = m[2] ? parseInt(m[2], 10) : st.size - 1;
+      if (!m[1] && m[2]) {                       // bytes=-500 后缀形式
+        const suffix = parseInt(m[2], 10);
+        start = Math.max(0, st.size - suffix);
+        end = st.size - 1;
+      }
+      end = Math.min(end, st.size - 1);
+      if (!Number.isFinite(start) || start >= st.size || end < start) {
+        res.writeHead(416, { 'Content-Range': `bytes */${st.size}` }).end();
+        return;
+      }
+      res.writeHead(206, {
+        ...baseHeaders,
+        'Content-Length': end - start + 1,
+        'Content-Range': `bytes ${start}-${end}/${st.size}`,
+      });
+      if (req.method === 'HEAD') { res.end(); return; }
+      fs.createReadStream(file, { start, end }).on('error', () => res.destroy()).pipe(res);
+      return;
+    }
+
+    res.writeHead(200, { ...baseHeaders, 'Content-Length': st.size });
     if (req.method === 'HEAD') { res.end(); return; }
     fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
   });

@@ -25,8 +25,30 @@ GUI 不是另写一套转码逻辑，而是**同一份 `bin/ascii-full.js` 的�
 `ffmpeg-static` / `ffprobe-static` 通过 `asarUnpack` 从 asar 里解出来，
 再由 `--ffmpeg` / `--ffprobe` 传给 CLI。
 
-界面参数与命令行一一对应：网格、帧率、区间、每块帧数、灰度级数、
-上下双色、`--force`，以及启动大字的文字/填充字符/开关。
+界面参数与命令行一一对应：网格行数 / 字符列数（超采样）、帧率、`--interp`、
+区间、每块帧数、灰度级数、上下双色、`--force`、启动大字的文字/填充字符/开关，
+以及 v1.4 的声音面板。
+
+> 填了「字符列数」就只传 `--cols`、不再传 `--grid` —— 同时给两个会让 CLI
+> 认为行数已指定，超采样网格就被压扁。脚本会按源片比例自动反算行数。
+
+### 声音在桌面版怎么走
+
+「③ 声音」勾上后，GUI 给 CLI 追加 `--audio` / `--audio-codec` /
+`--audio-bitrate` / `--audio-id`，音轨单独落到产物的 `audio/` 目录，
+**不进 `chunks/`**。转完内置服务会把 `audio/` 一起供出去，MIME 与
+HTTP Range(206) 和 `bin/serve.js` 是同一套逻辑 —— 不回 206 的话
+`<audio>` 拖进度会卡住。
+
+已有产物不想重转画面，用命令行补即可，桌面版不需要额外开关：
+
+```sh
+node bin/attach-audio.js --out ./ascii-out --src clip.mp4
+node bin/attach-audio.js --out ./ascii-out --file bgm.m4a --id bgm
+```
+
+播放器窗口会自动出现「音轨 N」面板，可逐轨调音量、设全局音画偏移。
+浏览器拦截无手势有声自动播放时，点一下 `🔇 开声音` 解锁。详见 [AUDIO.md](AUDIO.md)。
 
 ## 本地预览
 
@@ -44,7 +66,7 @@ npm run build          # 出安装包到 ../dist-desktop
 ## 一键 Release
 
 ```sh
-git tag v1.2.1 && git push origin v1.2.1
+git tag v1.4.0 && git push origin v1.4.0
 ```
 
 `.github/workflows/release.yml` 三个 job：

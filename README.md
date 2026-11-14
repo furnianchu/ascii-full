@@ -99,7 +99,33 @@ ascii-full --src clip.mp4 --out ./ascii-out --grid 60 --to 3 --force
 ascii-full --src clip.mp4 --out ./ascii-out --grid 60 --force     # 去掉 --to 即全片
 ```
 
-`--force` 只清 `chunks/` 与 `meta.json`，不会删播放器或其他文件。
+`--force` 只清 `chunks/`、`meta.json` 与转码器自己抽的音轨；播放器、
+`attach-audio --file` 后期挂的 BGM 都会保留。
+
+## 音频：旁路、可叠加、可不重转
+
+> v1.3 及更早只取 `v:0`，音轨压根没进过格式。v1.4 起画面与声音分成两条独立的路。
+
+```sh
+# 新产物：转码时一次带上
+ascii-full --src clip.mp4 --out ./ascii-out --audio
+
+# 已有产物：补主音轨，不重转画面（几 GB 的 chunks 一个字节不动）
+node bin/attach-audio.js --out ./ascii-out --src clip.mp4
+
+# 叠加 BGM / 解说 / 多语种，直接挂现成音频、不重编码
+node bin/attach-audio.js --out ./ascii-out --file bgm.m4a --id bgm --gain 0.6 --offset 1.5
+node bin/attach-audio.js --out ./ascii-out --list
+```
+
+`meta.audio.tracks[]` **从第一天就是数组**：第一条为 `master` 主时钟，其余为
+`overlay`，每条自带 `gain / offset / role`。播放器丢掉自数的时间轴，改由主时钟轨的
+`currentTime` 算帧，拖帧、变速、切后台都不会音画错位；底部「音轨 N」面板可逐轨调音量、
+全局 `音画 ±ms` 微调。没有 `meta.audio` 的老产物完全走旧时钟，零回归。
+
+浏览器会拦截无手势的有声自动播放 —— 被拦时自动降级静音、按钮变成 `🔇 开声音`，
+**点一下解锁**（或按 `M`）。内置服务已给音频补了正确 MIME 与 HTTP Range(206)。
+详见 [docs/AUDIO.md](docs/AUDIO.md) 与 [FORMAT.md](docs/FORMAT.md#audio--旁路多轨音频v14)。
 
 ## CLI
 
@@ -114,7 +140,10 @@ ascii-full --src clip.mp4 --out ./ascii-out --grid 60 --force     # 去掉 --to 
 | `--chunk N` | 每个 gzip 块装几帧，默认 60 |
 | `--ramp 10\|70` | 灰度级数，默认 70 |
 | `--half` | 用 `▀` 上下各带一色，垂直分辨率翻倍 |
-| `--force` | 已有产物时清空重跑 |
+| `--audio` | 从源片抽一条主音轨到 `audio/main.webm`（默认关闭） |
+| `--audio-codec opus\|mp3\|pcm` | 音频编码，默认 opus |
+| `--audio-bitrate R` / `--audio-id N` | 默认 `48k` / `main` |
+| `--force` | 已有产物时清空重跑（保留 `--file` 后挂的外部音轨） |
 | `--logo TEXT` | 启动 ASCII 大字的文字，默认 `ASCII FULL` |
 | `--logo-char C` / `--logo-file F` | 换填充字符 / 直接读现成 ASCII art |
 | `--no-logo` | 关掉大字 |
@@ -142,7 +171,7 @@ ascii-full --src clip.mp4 --out ./ascii-out --grid 60 --force     # 去掉 --to 
 - **终端**：`ascii-full-term`，行内连续同色合并转义序列，Ctrl-C 恢复光标。
   需要 `$COLORTERM=truecolor` 且终端宽度 ≥ `meta.W`。
 
-三者都只读 `meta.json` + `chunks/*.gz`，不依赖本仓库运行；桌面版的「打开播放器」
+三者都只读 `meta.json` + `chunks/*.gz`（有音轨时再加 `audio/`），不依赖本仓库运行；桌面版的「打开播放器」
 会自动起一个仅本机可访问的临时服务并新开窗口，等价于第二条。
 
 ### 放大与超采样
@@ -184,8 +213,10 @@ ascii-full --src clip.mp4 --out ./ascii-out --grid 60 --force     # 去掉 --to 
 
 ```
 bin/ascii-full.js       转码器（ffmpeg 流式抽帧 → rgb24 → 字符格 → gzip 分块）
-bin/ascii-full-term.js  终端播放器
-bin/serve.js            零配置静态服务（--open 自动开浏览器）
+bin/ascii-full-term.js  终端播放器（无声）
+bin/serve.js            零配置静态服务（--open / --lan / HTTP Range 206）
+bin/attach-audio.js     旁路音轨管理：抽/挂/列/删/换主时钟，不碰 chunks
+bin/tunnel.js           临时 https 域名（cloudflared / localhost.run）
 bin/banner.js           5×7 点阵 ASCII 大字（可自定义文字/填充/外部 art）
 bin/logger.js           结构化启动日志、进度落盘、汇总
 web/player.html         浏览器播放器（转码时自动复制进产物目录）
@@ -193,7 +224,9 @@ web/standalone.html     零安装单文件播放器（拖目录即播）
 desktop/                Electron 图形版（内置 ffmpeg，复用同一份 CLI）
 scripts/build-portable.sh 组装免安装终端版
 .github/workflows/release.yml  打 tag 自动出桌面包 / 免安装包 / 独立 HTML
-docs/FORMAT.md          数据格式 v1：字段、二进制布局、最小读取示例
+docs/FORMAT.md          数据格式 v1：字段、二进制布局、audio.tracks[]、最小读取示例
+docs/AUDIO.md           音频：旁路 / 多轨叠加 / 不重转补音轨 / 自动播放解锁
+docs/URLS.md            端口、--lan、https 隧道、域名绑定、?src= 远程读取
 docs/DESKTOP.md         图形版与 Release 产物说明
 docs/TROUBLESHOOTING.md 排错（含 Termux / file:// / 404 等实战坑）
 examples/               合成测试片脚本
@@ -250,7 +283,7 @@ npm test
 2. 在 `package.json` 补 `repository` / `author` / `bugs` 字段。
 3. `npm pack --dry-run` 看一眼将要发布的文件（`files` 字段已限定范围，
    桌面版与 workflow 只进 GitHub 仓库、不进 npm 包）。
-4. 想发 npm：`npm publish`；想发安装包：仓库推上去后 `git tag v1.2.1 && git push origin v1.2.1`。
+4. 想发 npm：`npm publish`；想发安装包：仓库推上去后 `git tag v1.4.0 && git push origin v1.4.0`。
 5. 需要可复现的 GUI 构建，可在 `desktop/` 里跑一次 `npm install` 并把生成的
    `desktop/package-lock.json` 一起提交（当前 workflow 用 `npm install` 也能跑通）。
 
@@ -269,3 +302,18 @@ MIT · 依赖 [FFmpeg](https://ffmpeg.org/) 与 Node.js 内置模块，无其他
 新增 `--interp`（配合 `--fps`）做运动补偿插帧，`meta.json` 增加
 `interp` / `fpsUpsampled` 字段以区分「真插帧」和「复制帧」。详见
 [排错文档](docs/TROUBLESHOOTING.md#感觉帧率很低--画面一顿一顿)。
+
+## v1.4.0 · 声音单独成一路
+
+之前整条管线只取 `v:0`，音轨从进 ffmpeg 那一刻就被丢了 —— 不是静音开关，
+是声音从来没进过格式。v1.4 把画面与声音彻底拆开：`chunks/` 只管画，
+`audio/` 只管声，`meta.audio.tracks[]` 把两者关联起来。
+
+- `--audio` 抽主音轨；`attach-audio --src` 给**已有产物**补音轨，不重转画面
+- `attach-audio --file` 直接挂现成音频（不重编码），可无限叠加 BGM / 解说 / 多语种
+- 每条轨独立 `gain / offset / role`，`--list / --remove / --master` 管理
+- 播放器改用主时钟轨的 `currentTime` 算帧，音画不再靠两个钟各自走
+- 内置服务补音频 MIME 与 HTTP Range(206)；被浏览器拦有声自动播放时降级静音并提示解锁
+- `--force` 重转画面只删转码器自己抽的音轨，`source:'file'` 的外部轨原样继承
+
+格式细节见 [FORMAT.md](docs/FORMAT.md#audio--旁路多轨音频v14)，操作见 [AUDIO.md](docs/AUDIO.md)。

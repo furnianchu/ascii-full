@@ -29,9 +29,9 @@ function ok(cond, msg) {
 function run(cmd, args, opts = {}) {
   return spawnSync(cmd, args, { encoding: 'utf8', ...opts });
 }
-function get(url) {
+function get(url, headers = {}) {
   return new Promise((resolve, reject) => {
-    http.get(url, r => {
+    http.get(url, { headers }, r => {
       const chunks = [];
       r.on('data', d => chunks.push(d));
       r.on('end', () => {
@@ -47,6 +47,32 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function main() {
   console.log('— 渲染等价性（无 ffmpeg 依赖）—');
   checkRender(ok);
+
+  // 0-A. 桌面端 / CLI 参数同步（静态，无 ffmpeg 也能跑）
+  // 教训：CLI 加了 --audio 等开关，GUI 曾漏同步半个版本。这里把「必须一起改」
+  // 固化成断言，本地 npm test 与 CI 都会拦住。
+  const rd = p => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  console.log('— 桌面端参数同步（静态）—');
+  const dm = rd('desktop/main.js');
+  const dh = rd('desktop/renderer/index.html');
+  const da = rd('desktop/renderer/app.js');
+  const dp = JSON.parse(rd('desktop/package.json'));
+  const rootPkg = JSON.parse(rd('package.json'));
+  ok(dp.version === rootPkg.version, `desktop 版本 ${dp.version} 与根 ${rootPkg.version} 一致`);
+  for (const flag of ["'--audio'", "'--audio-codec'", "'--audio-bitrate'", "'--audio-id'", "'--cols'", "'--interp'"]) {
+    ok(dm.includes(flag), `desktop/main.js 透传 ${flag}`);
+  }
+  ok(dm.includes("'.webm': 'audio/webm'") && dm.includes('writeHead(206'), '桌面内置服务有音频 MIME 与 Range(206)');
+  const svSrc = rd('bin/serve.js');
+  ok(svSrc.includes("'.webm': 'audio/webm'") && svSrc.includes('writeHead(206'), 'bin/serve.js 同样支持 Range(206)');
+  for (const id of ['id="audio"', 'id="audioCodec"', 'id="audioBitrate"', 'id="audioId"', 'id="cols"', 'id="interp"']) {
+    ok(dh.includes(id), `界面有 ${id} 控件`);
+  }
+  for (const key of ['audioCodec:', 'audioBitrate:', 'audioId:', 'cols:', 'interp:', 'audio:']) {
+    ok(da.includes(key), `app.js collect() 收集 ${key}`);
+  }
+  ok(dm.includes("args.push(cols ? '--cols' : '--grid'"), 'cols 与 grid 互斥传参（超采样不压扁）');
+  ok(da.includes('syncAudio()'), '音频控件有启用联动');
 
   console.log('ascii-full smoke test\n');
 
@@ -183,6 +209,130 @@ async function main() {
   const th = run(process.execPath, [path.join(ROOT, 'bin', 'tunnel.js'), '--help']);
   ok(th.status === 0 && th.stdout.includes('--provider'), 'tunnel --help 可用且不联网');
 
+  // 4f. 旁路音轨 / 多轨叠加 / 不重转补音轨 -------------------------------
+  const crypto = require('crypto');
+  const hash = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+  const ATTACH = path.join(ROOT, 'bin', 'attach-audio.js');
+  ok(fs.existsSync(ATTACH), 'bin/attach-audio.js 存在');
+  const ah = run(process.execPath, [ATTACH, '--help']);
+  ok(ah.status === 0 && ah.stdout.includes('--file') && ah.stdout.includes('--list'),
+    'attach-audio --help 可用且不联网');
+
+  // 带 440Hz 音轨的测试片（sample.mp4 是纯画面，正好用来测「无音轨」分支）
+  const sampleA = path.join(TMP, 'sample-audio.mp4');
+  let ga = run('ffmpeg', ['-v', 'error',
+    '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24:duration=1',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=1',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '64k',
+    '-shortest', '-y', sampleA]);
+  if (ga.status !== 0) {
+    ga = run('ffmpeg', ['-v', 'error',
+      '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=24:duration=1',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+      '-shortest', '-y', sampleA]);
+  }
+  ok(ga.status === 0 && fs.existsSync(sampleA), '合成带音轨测试片 (AAC 440Hz)');
+
+  const outA = path.join(TMP, 'out-audio');
+  const ra = run(process.execPath, [BIN, '--src', sampleA, '--out', outA,
+    '--grid', '20', '--to', '1', '--chunk', '12', '--audio', '--force']);
+  ok(ra.status === 0, '--audio 转码退出码 0' + (ra.status !== 0 ? '\n' + ra.stderr : ''));
+  const MA = JSON.parse(fs.readFileSync(path.join(outA, 'meta.json'), 'utf8'));
+  ok(MA.audio && MA.audio.version === 1 && MA.audio.master === 0, 'meta.audio 结构 / master=0');
+  ok(Array.isArray(MA.audio.tracks) && MA.audio.tracks.length === 1, '一条主音轨，且是 tracks[] 数组');
+  const T0 = MA.audio.tracks[0];
+  ok(T0.id === 'main' && T0.file === 'audio/main.webm' && T0.codec === 'opus',
+    'track 基础字段：id / file / codec');
+  ok(String(T0.mime).includes('opus') && T0.role === 'master' && T0.source === 'video',
+    'track 带 mime / role / source');
+  ok(T0.gain === 1 && T0.offset === 0 && T0.srcStart === 0, 'track 默认 gain / offset / srcStart');
+  ok(fs.existsSync(path.join(outA, 'audio', 'main.webm')) &&
+     fs.statSync(path.join(outA, 'audio', 'main.webm')).size > 0, 'audio/main.webm 已落盘且非空');
+  const apb = run('ffprobe', ['-v', 'error', '-select_streams', 'a:0',
+    '-show_entries', 'stream=codec_name,sample_rate', '-of', 'default=nw=1',
+    path.join(outA, 'audio', 'main.webm')]);
+  ok(apb.status === 0 && apb.stdout.includes('opus'), '抽出的音轨确实是 Opus（ffprobe 验证）');
+  ok(MA.frameBytes === MA.W * MA.H * 4 && MA.frames >= 20, '带音频时画面帧格式完全不变');
+
+  const outNA = path.join(TMP, 'out-noaudio');
+  const rna = run(process.execPath, [BIN, '--src', sample, '--out', outNA,
+    '--grid', '20', '--to', '0.3', '--audio', '--force']);
+  ok(rna.status === 0, '源片无音轨时 --audio 不报错（静音降级）');
+  const MNA = JSON.parse(fs.readFileSync(path.join(outNA, 'meta.json'), 'utf8'));
+  ok(MNA.audio && MNA.audio.tracks.length === 0, '无音轨 → tracks=[]，产物静音但可后挂');
+  const outNo = path.join(TMP, 'out-no-audio');
+  const rno = run(process.execPath, [BIN, '--src', sampleA, '--out', outNo,
+    '--grid', '20', '--to', '0.3', '--audio', '--no-audio', '--force']);
+  ok(rno.status === 0 && !JSON.parse(fs.readFileSync(path.join(outNo, 'meta.json'), 'utf8')).audio,
+    '--no-audio 优先，meta 完全不含 audio（老格式）');
+
+  // 给第 2 节的产物补音轨：chunks 一个字节都不能变
+  // 故意把播放器换成 v1.3 老版，验证「补完音轨不会仍然没声音」
+  const chunkBefore = hash(path.join(out, 'chunks', 'c_00000.gz'));
+  fs.writeFileSync(path.join(out, 'player.html'), '<html>legacy player v1.3</html>');
+  const at1 = run(process.execPath, [ATTACH, '--out', out, '--src', sampleA, '--id', 'main']);
+  ok(at1.status === 0, 'attach-audio 给已有产物补主音轨' + (at1.status !== 0 ? '\n' + at1.stderr : ''));
+  const M1 = JSON.parse(fs.readFileSync(path.join(out, 'meta.json'), 'utf8'));
+  ok(M1.audio.tracks.length === 1 && M1.audio.tracks[0].source === 'video', '补的轨写进 meta');
+  ok(fs.readFileSync(path.join(out, 'player.html'), 'utf8').includes('meta.audio'),
+    '补音轨自动把老播放器升级成支持音频的版本');
+  ok(hash(path.join(out, 'chunks', 'c_00000.gz')) === chunkBefore, '补音轨后 chunks 逐字节不变');
+
+  const wav = path.join(TMP, 'bgm.wav');
+  const gw = run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i',
+    'sine=frequency=660:duration=1', '-ac', '2', '-ar', '44100',
+    '-c:a', 'pcm_s16le', '-y', wav]);
+  ok(gw.status === 0 && fs.existsSync(wav), '合成外部 BGM wav');
+  const at2 = run(process.execPath, [ATTACH, '--out', out, '--file', wav,
+    '--id', 'bgm', '--gain', '0.6', '--offset', '1.5']);
+  ok(at2.status === 0, 'attach-audio --file 直接挂外部音频（不重编码）');
+  const M2 = JSON.parse(fs.readFileSync(path.join(out, 'meta.json'), 'utf8'));
+  ok(M2.audio.tracks.length === 2, '两路音轨叠加成功');
+  const bgm = M2.audio.tracks.find(t => t.id === 'bgm');
+  ok(bgm && bgm.source === 'file' && bgm.gain === 0.6 && bgm.offset === 1.5,
+    '叠加轨带 source / gain / offset');
+  ok(fs.existsSync(path.join(out, 'audio', 'bgm.wav')), 'audio/bgm.wav 已落盘');
+  ok(hash(path.join(out, 'chunks', 'c_00000.gz')) === chunkBefore, '第二路音轨仍不碰 chunks');
+
+  const ls = run(process.execPath, [ATTACH, '--out', out, '--list']);
+  ok(ls.status === 0 && ls.stdout.includes('main') && ls.stdout.includes('bgm'), '--list 列出两路');
+  const ms = run(process.execPath, [ATTACH, '--out', out, '--master', 'bgm']);
+  ok(ms.status === 0 && JSON.parse(fs.readFileSync(path.join(out, 'meta.json'), 'utf8')).audio.master === 1,
+    '--master 换主时钟');
+  const rm = run(process.execPath, [ATTACH, '--out', out, '--remove', 'bgm']);
+  const M3 = JSON.parse(fs.readFileSync(path.join(out, 'meta.json'), 'utf8'));
+  ok(rm.status === 0 && M3.audio.tracks.length === 1 &&
+     !fs.existsSync(path.join(out, 'audio', 'bgm.wav')), '--remove 删轨连文件');
+  ok(hash(path.join(out, 'chunks', 'c_00000.gz')) === chunkBefore, '--remove 不碰 chunks');
+
+  // --force 重转画面：转码器自己抽的轨清掉，用户 --file 挂的轨原样继承
+  run(process.execPath, [ATTACH, '--out', out, '--file', wav, '--id', 'bgm', '--gain', '0.5']);
+  const rf = run(process.execPath, [BIN, '--src', sample, '--out', out,
+    '--grid', '20', '--to', '1', '--chunk', '12', '--force']);
+  ok(rf.status === 0, '--force 重转画面退出码 0');
+  const M4 = JSON.parse(fs.readFileSync(path.join(out, 'meta.json'), 'utf8'));
+  const keep = M4.audio && M4.audio.tracks.find(t => t.id === 'bgm');
+  ok(keep && keep.source === 'file' && keep.gain === 0.5, '--force 继承外部叠加轨（不用重挂）');
+  ok(fs.existsSync(path.join(out, 'audio', 'bgm.wav')), '继承轨的音频文件仍在');
+  ok(!fs.existsSync(path.join(out, 'audio', 'main.webm')), '转码器自己抽的旧音轨已被清理');
+
+  // 播放器 / 服务 / 文档静态校验
+  ok(pl.includes('masterEl.currentTime + offsetSec') && pl.includes('M.audio'),
+    '播放器用音频主时钟换算帧索引，且读 meta.audio');
+  ok(pl.includes('setMuted') && pl.includes('audioPlay') && pl.includes("QS.get('mute')") &&
+     pl.includes("QS.get('offset')"), '播放器有静音解锁 / ?mute / ?offset');
+  ok(sa.includes('audioFiles') && sa.includes('masterEl.currentTime') && sa.includes('setupAudio'),
+    'standalone 同步支持多轨与音频主时钟');
+  ok(sv.includes("'.webm': 'audio/webm'") && sv.includes("'Accept-Ranges'"),
+    'serve 补了音频 MIME、Range 与 Accept-Ranges');
+  const fm = fs.readFileSync(path.join(ROOT, 'docs', 'FORMAT.md'), 'utf8');
+  ok(fm.includes('audio.tracks') && fm.includes('HTTP Range') && fm.includes('currentTime'),
+    'FORMAT.md 写明 audio.tracks[] 与时钟换算');
+  ok(fs.existsSync(path.join(ROOT, 'docs', 'AUDIO.md')) &&
+     fs.readFileSync(path.join(ROOT, 'docs', 'AUDIO.md'), 'utf8').includes('多轨'),
+    'docs/AUDIO.md 存在且讲了多轨叠加');
+
   // 5. 内置 HTTP 服务
   return (async () => {
     const port = 18000 + Math.floor(Math.random() * 2000);
@@ -206,6 +356,17 @@ async function main() {
       ok(c.status === 200 && c.bytes > 0, 'GET /chunks/c_00000.gz → 200');
       ok(!c.headers['content-encoding'], '.gz 不带 Content-Encoding（播放器自行解压）');
       ok(d.status === 404 || d.status === 403, '目录穿越被拦截');
+      const wavPath = path.join(out, 'audio', 'bgm.wav');
+      const wavSize = fs.statSync(wavPath).size;
+      const aw = await get(`http://127.0.0.1:${port}/audio/bgm.wav`);
+      ok(aw.status === 200 && aw.headers['content-type'] === 'audio/wav' &&
+         aw.headers['accept-ranges'] === 'bytes', 'GET 音频 → 200 + 正确 MIME + Accept-Ranges');
+      const rg = await get(`http://127.0.0.1:${port}/audio/bgm.wav`, { Range: 'bytes=0-99' });
+      ok(rg.status === 206 && rg.bytes === 100 &&
+         rg.headers['content-range'] === `bytes 0-99/${wavSize}` &&
+         rg.headers['accept-ranges'] === 'bytes', 'GET 音频带 Range → 206 + Content-Range');
+      const sfx = await get(`http://127.0.0.1:${port}/audio/bgm.wav`, { Range: 'bytes=-64' });
+      ok(sfx.status === 206 && sfx.bytes === 64, 'Range 后缀形式 bytes=-64 → 206');
     } finally { srv.kill(); }
 
     // 6. 终端播放器（跑一小会儿就 kill）
