@@ -83,7 +83,7 @@ bash scripts/build-portable.sh /tmp/out \
 
 ## 发布前两处要手写
 
-- `LICENSE` 里的版权人（已填 `furnianchu`）
+- `LICENSE` 里的 `ascii-full contributors`
 - 根 `package.json` 的 `repository` / `author` / `bugs`
 
 ## 常见状况

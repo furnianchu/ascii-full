@@ -2,8 +2,6 @@
 
 > Offline full-fps 24-bit truecolor ASCII video transcoder.
 > 把任意视频转成本地可播的**全帧率、每字符独立真彩**字符画，全程离线、零 npm 运行时依赖。
->
-> 仓库：https://github.com/furnianchu/ascii-full
 
 给视频做 ASCII 化，常见做法是降到 6~12 fps、整帧共用一个主色、10 级灰度 ——
 那是为了塞进网页。这个项目反过来：**不为体积让步**，为本地收藏、终端放映、
@@ -88,7 +86,12 @@ ascii-full-serve ./ascii-out
 没装全局就把两条换成
 `node bin/ascii-full.js --src ...` 和 `node bin/serve.js ./ascii-out`。
 
-浏览器打开 `http://localhost:8080/player.html`。
+浏览器打开 **`http://127.0.0.1:8080/`** —— 根路径直接进播放器，不用补 `/player.html`。
+
+想让 Termux 自动拉起 Edge：`ascii-full-serve ./ascii-out 8080 --open`。
+想要一条能发出去的域名链接：见 [docs/URLS.md](docs/URLS.md)
+（`ascii-full-tunnel` 出临时 https 域名、`--lan` 出局域网链接、
+`--hostname` 绑自己的域、`?src=` 让播放器直接读远程产物）。
 第一次建议先截 3 秒看效果，满意再跑全片：
 
 ```sh
@@ -243,8 +246,8 @@ npm test
 
 ## 发布前
 
-1. 维护者信息已按 `furnianchu/ascii-full` 填好：`LICENSE`、`package.json`、本文件顶部三处。
-   换仓库名 / 账号时全局替换 `furnianchu/ascii-full` 即可。
+1. 把 `LICENSE` 里的 `ascii-full contributors` 换成你的名字 / 组织。
+2. 在 `package.json` 补 `repository` / `author` / `bugs` 字段。
 3. `npm pack --dry-run` 看一眼将要发布的文件（`files` 字段已限定范围，
    桌面版与 workflow 只进 GitHub 仓库、不进 npm 包）。
 4. 想发 npm：`npm publish`；想发安装包：仓库推上去后 `git tag v1.2.1 && git push origin v1.2.1`。

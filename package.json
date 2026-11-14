@@ -1,11 +1,12 @@
 {
   "name": "ascii-full",
-  "version": "1.2.1",
-  "description": "Offline full-fps 24-bit truecolor ASCII video transcoder — CLI, desktop GUI, portable bundles and a zero-install standalone player (ffmpeg + Node, zero runtime deps)",
+  "version": "1.3.0",
+  "description": "Offline full-fps 24-bit truecolor ASCII video transcoder — CLI, terminal, browser, desktop GUI, portable bundles and one-link HTTPS tunnels (ffmpeg + Node, zero runtime deps)",
   "bin": {
     "ascii-full": "bin/ascii-full.js",
     "ascii-full-term": "bin/ascii-full-term.js",
-    "ascii-full-serve": "bin/serve.js"
+    "ascii-full-serve": "bin/serve.js",
+    "ascii-full-tunnel": "bin/tunnel.js"
   },
   "files": [
     "bin/",
@@ -19,6 +20,7 @@
     "test": "node test/smoke.js",
     "sample": "bash examples/make-sample.sh",
     "serve": "node bin/serve.js",
+    "tunnel": "node bin/tunnel.js",
     "desktop": "npm --prefix desktop start",
     "banner": "node bin/banner.js"
   },
@@ -37,17 +39,10 @@
     "electron",
     "desktop",
     "portable",
-    "ascii-banner"
+    "ascii-banner",
+    "cloudflare-tunnel",
+    "localhost"
   ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/furnianchu/ascii-full.git"
-  },
-  "author": "furnianchu",
-  "bugs": {
-    "url": "https://github.com/furnianchu/ascii-full/issues"
-  },
-  "homepage": "https://github.com/furnianchu/ascii-full#readme",
   "license": "MIT",
   "private": false
 }

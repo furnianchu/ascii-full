@@ -1,6 +1,6 @@
 appId: cc.ascii-full.desktop
 productName: ascii-full
-copyright: Copyright (c) 2026 furnianchu
+copyright: Copyright (c) ascii-full contributors
 
 directories:
   app: .

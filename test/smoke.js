@@ -32,9 +32,13 @@ function run(cmd, args, opts = {}) {
 function get(url) {
   return new Promise((resolve, reject) => {
     http.get(url, r => {
-      let n = 0;
-      r.on('data', d => n += d.length);
-      r.on('end', () => resolve({ status: r.statusCode, headers: r.headers, bytes: n }));
+      const chunks = [];
+      r.on('data', d => chunks.push(d));
+      r.on('end', () => {
+        const body = Buffer.concat(chunks);
+        resolve({ status: r.statusCode, headers: r.headers,
+          bytes: body.length, text: body.toString('utf8') });
+      });
     }).on('error', reject);
   });
 }
@@ -163,6 +167,22 @@ async function main() {
   ok(C3.W === 40 && C3.H > 8, '--cols 精确指定列数并按比例反算行数（不拉伸）');
   ok(C3.frameBytes === C3.W * C3.H * 4, '--cols 产物 frameBytes 正确');
 
+  // 4e. 入口形态：根路径直出 / Termux 自动打开 / 公网域名 / 远程 src
+  ok(pl.includes("QS.get('src')") && pl.includes('urlOf('), '播放器支持 ?src= 远程域名前缀');
+  const sv = fs.readFileSync(path.join(ROOT, 'bin', 'serve.js'), 'utf8');
+  ok(sv.includes('termux-open-url') && sv.includes('networkInterfaces'),
+    'serve 支持 Termux 自动拉起浏览器与局域网 IP 枚举');
+  ok(sv.includes('--public') && sv.includes("'/health'"), 'serve 支持 --public 域名与 /health');
+  ok(sv.includes("pathname === '/favicon.ico'"), 'serve 静默处理 favicon（不再刷 404）');
+  const tn = fs.readFileSync(path.join(ROOT, 'bin', 'tunnel.js'), 'utf8');
+  ok(tn.includes('--provider cloudflared') && tn.includes('nokey@localhost.run') &&
+    /trycloudflare/.test(tn) && /lhr\\?\.life/.test(tn),
+    'tunnel 同时支持 cloudflared 与 SSH 两种 https 域名');
+  ok(tn.includes('Under Attack Mode'), 'tunnel 明确写出 UAM 会挡掉 .gz 的坑');
+  ok(fs.existsSync(path.join(ROOT, 'docs', 'URLS.md')), '文档 docs/URLS.md 存在');
+  const th = run(process.execPath, [path.join(ROOT, 'bin', 'tunnel.js'), '--help']);
+  ok(th.status === 0 && th.stdout.includes('--provider'), 'tunnel --help 可用且不联网');
+
   // 5. 内置 HTTP 服务
   return (async () => {
     const port = 18000 + Math.floor(Math.random() * 2000);
@@ -171,10 +191,17 @@ async function main() {
     await sleep(500);
     try {
       const a = await get(`http://127.0.0.1:${port}/player.html`);
+      const root = await get(`http://127.0.0.1:${port}/`);
+      const fav = await get(`http://127.0.0.1:${port}/favicon.ico`);
+      const health = await get(`http://127.0.0.1:${port}/health`);
       const b = await get(`http://127.0.0.1:${port}/meta.json`);
       const c = await get(`http://127.0.0.1:${port}/chunks/c_00000.gz`);
       const d = await get(`http://127.0.0.1:${port}/../../etc/passwd`);
       ok(a.status === 200 && a.bytes > 0, 'GET /player.html → 200');
+      ok(root.status === 200 && root.text.includes('ascii-full'),
+        'GET / 直接返回播放器（不用补 /player.html）');
+      ok(fav.status === 204, 'GET /favicon.ico → 204（不再刷 404）');
+      ok(health.status === 200 && JSON.parse(health.text).ok === true, 'GET /health → 200 JSON');
       ok(b.status === 200, 'GET /meta.json → 200');
       ok(c.status === 200 && c.bytes > 0, 'GET /chunks/c_00000.gz → 200');
       ok(!c.headers['content-encoding'], '.gz 不带 Content-Encoding（播放器自行解压）');

@@ -39,7 +39,7 @@
 <header>
   <b>ascii-full · 真彩字符画</b>
   <span id="metaLine" class="dim">载入中…</span>
-  <span class="dim">· 纯本地 · 无外部请求</span>
+  <span class="dim" id="srcLine">· 纯本地 · 无外部请求</span>
 </header>
 
 <div id="stage"><canvas id="cv"></canvas><div id="err" hidden></div></div>
@@ -72,9 +72,16 @@ const $ = s => document.querySelector(s);
 const cv = $('#cv'), ctx = cv.getContext('2d', { alpha:false });
 const stage = $('#stage');
 let M = null, cache = new Map(), pending = new Map();
+const QS = new URLSearchParams(location.search);
+// ?src=https://域名/路径/ 让播放器改从任意域名拉 meta.json + chunks/*.gz。
+// 不填就是同目录（本地服务 / 把产物直接放站点根目录），行为与旧版完全一致。
+// 跨域时对方需要给 .gz 与 meta.json 返回 Access-Control-Allow-Origin。
+const BASE = (QS.get('src') || '').replace(/\/+$/, '');
+const urlOf = n => BASE ? BASE + '/' + n : n;
+if (BASE) $('#srcLine').textContent = '· 远程 ' + BASE;
 // 有界 LRU：默认只驻留 6 块解压后的帧数据；可用 ?cache=12 调整。
 // cache 是内存缓存（Uint8Array），磁盘上的 chunks/*.gz 是产物，两者互不相干。
-const MAX_CACHE = Math.max(2, parseInt(new URLSearchParams(location.search).get('cache') || '6', 10) || 6);
+const MAX_CACHE = Math.max(2, parseInt(QS.get('cache') || '6', 10) || 6);
 let frame = 0, playing = false, speed = 1, blockMode = false;
 let lastT = 0, acc = 0, raf = 0;
 let chase = false;
@@ -96,7 +103,7 @@ function fail(msg) {
 }
 
 async function loadMeta() {
-  const r = await fetch('meta.json');
+  const r = await fetch(urlOf('meta.json'));
   if (!r.ok) throw new Error('meta.json 读取失败（' + r.status + '）');
   return r.json();
 }
@@ -111,7 +118,7 @@ async function ensureChunk(n) {
   const p = (async () => {
     try {
       const name = 'chunks/c_' + String(n).padStart(5, '0') + '.gz';
-      const r = await fetch(name);
+      const r = await fetch(urlOf(name));
       if (!r.ok) throw new Error('缺块 ' + name);
       let buf;
       if (typeof DecompressionStream !== 'undefined') {

@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 /*
- * ascii-full-serve —— 给产物目录起一个零配置本地静态服务
+ * ascii-full-serve —— 给产物目录起一个零配置本地服务，直接给一条可点的 URL
  *
  *   ascii-full-serve [输出目录] [端口] [选项]
- *   ascii-full-serve ./ascii-out 8080 --open
- *   ascii-full-serve ./ascii-out --logo "YUEYUE" --no-logo   # 自定义/关掉启动大字
+ *   ascii-full-serve ./ascii-out 8080 --open          # 自动拉起浏览器
+ *   ascii-full-serve ./ascii-out --lan                # 同一 WiFi 下别的设备也能开
+ *   ascii-full-serve ./ascii-out --public https://abc.trycloudflare.com
  *
- * 为什么需要它：浏览器不允许 file:// 页面 fetch 同目录的 .gz，必须走 HTTP。
- * 不想起服务也可以用 web/standalone.html —— 双击、拖入产物目录即可，零命令。
+ * 根路径 "/" 直接进播放器，不需要补 /player.html（也不会再出目录列表）。
+ * 想给公网域名：先跑 ascii-full-tunnel 拿到 https 链接，再用 --public 贴回来，
+ * 这样启动横幅打印的就是域名而不是 127.0.0.1。
  *
  * 关键约定：.gz 以 application/octet-stream 原样返回，**不**加 Content-Encoding。
  * 文件本身已是 gzip 数据，播放器用 DecompressionStream('gzip') 自己解。
@@ -15,6 +17,7 @@
 'use strict';
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { print: printBanner } = require('./banner');
@@ -28,8 +31,8 @@ function opt(n, d) {
   return argv[i + 1];
 }
 const FLAG = n => argv.includes('--' + n);
-const VALUE_OPTS = new Set(['--logo', '--logo-char', '--logo-file']);
-const BOOL_OPTS = new Set(['--no-logo', '--open']);
+const VALUE_OPTS = new Set(['--logo', '--logo-char', '--logo-file', '--host', '--public']);
+const BOOL_OPTS = new Set(['--no-logo', '--open', '--lan']);
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -47,6 +50,9 @@ const LOGO = String(opt('logo', 'ASCII FULL'));
 const LOGO_CHAR = String(opt('logo-char', '#'));
 const LOGO_FILE = opt('logo-file', null);
 const AUTO_OPEN = FLAG('open');
+const LAN = FLAG('lan');
+const HOST = LAN ? '0.0.0.0' : String(opt('host', '127.0.0.1'));
+const PUBLIC = opt('public', null);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -58,7 +64,45 @@ const MIME = {
   '.svg':  'image/svg+xml',
   '.txt':  'text/plain; charset=utf-8',
   '.log':  'text/plain; charset=utf-8',
+  '.url':  'text/plain; charset=utf-8',
 };
+
+function isTermux() {
+  return !!(process.env.TERMUX_VERSION ||
+    (process.env.PREFIX || '').includes('com.termux') ||
+    fs.existsSync('/data/data/com.termux/files/usr/bin/termux-open-url'));
+}
+
+/** 枚举局域网 IPv4，优先常见家用网段，排除 docker / 回环 */
+function lanIPs() {
+  const out = [];
+  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+    for (const a of addrs || []) {
+      if (a.family !== 'IPv4' || a.internal) continue;
+      if (/^169\.254\./.test(a.address)) continue;
+      if (/^docker|^br-|^veth/.test(name)) continue;
+      out.push({ name, address: a.address });
+    }
+  }
+  return out.sort((x, y) => {
+    const rank = s => /^192\.168\./.test(s) ? 0 : /^10\./.test(s) ? 1 : /^172\.(1[6-9]|2\d|3[01])\./.test(s) ? 2 : 3;
+    return rank(x.address) - rank(y.address);
+  });
+}
+
+/** Termux 用 termux-open-url（需装 Termux:API），桌面退回 open / xdg-open / start */
+function openURL(url) {
+  const cmd = isTermux() ? 'termux-open-url'
+    : process.platform === 'win32' ? 'cmd'
+    : process.platform === 'darwin' ? 'open' : 'xdg-open';
+  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
+  try {
+    const p = spawn(cmd, args, { stdio: 'ignore', detached: true });
+    p.on('error', () => log.warn('自动打开失败，请手动点下面那条链接'));
+    p.unref();
+    return cmd;
+  } catch { log.warn('自动打开失败，请手动点下面那条链接'); return null; }
+}
 
 if (!fs.existsSync(ROOT)) {
   console.error('✗ 目录不存在: ' + ROOT);
@@ -69,14 +113,14 @@ if (!fs.existsSync(ROOT)) {
 if (!NO_LOGO) {
   printBanner({
     title: LOGO, char: LOGO_CHAR, file: LOGO_FILE,
-    subtitle: 'ascii-full-serve · 本地播放器（离线，零联网）',
+    subtitle: 'ascii-full-serve · 一条链接，直接进播放器',
   });
 }
 const log = createLogger({ name: 'ascii-full-serve', dir: ROOT });
 log.startup([
   ['目录', ROOT],
   ['端口', String(PORT)],
-  ['地址', `http://localhost:${PORT}/player.html`],
+  ['监听', HOST + (LAN ? ' (局域网)' : ' (仅本机)')],
   ['产物', fs.existsSync(path.join(ROOT, 'meta.json')) ? 'meta.json ✓' : '⚠ 没找到 meta.json（转码可能还没跑完）'],
 ]);
 log.stage('服务启动');
@@ -85,6 +129,13 @@ const server = http.createServer((req, res) => {
   let pathname;
   try { pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname); }
   catch { res.writeHead(400).end('Bad request'); return; }
+
+  if (pathname === '/favicon.ico') { res.writeHead(204).end(); return; }
+  if (pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ ok: true, service: 'ascii-full-serve', root: ROOT, port: PORT }));
+    return;
+  }
   if (pathname === '/') pathname = '/player.html';
 
   const file = path.resolve(ROOT, '.' + pathname);
@@ -94,7 +145,14 @@ const server = http.createServer((req, res) => {
   }
 
   fs.stat(file, (err, st) => {
-    if (err || !st.isFile()) { res.writeHead(404).end('Not found'); return; }
+    if (err || !st.isFile()) {
+      if (pathname === '/player.html') {
+        res.writeHead(404, { 'Content-Type': MIME['.html'] });
+        res.end('<!doctype html><meta charset="utf-8"><p>产物目录里没有 player.html。<br>' +
+          '重跑一次转码（会自动复制），或手动 cp web/player.html 到产物目录。</p>');
+      } else { res.writeHead(404).end('Not found'); }
+      return;
+    }
     const type = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
     res.writeHead(200, {
       'Content-Type': type,
@@ -107,16 +165,26 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, () => {
-  const url = `http://localhost:${PORT}/player.html`;
-  console.log(`  ▸ ${url}`);
+server.listen(PORT, HOST, () => {
+  const local = `http://127.0.0.1:${PORT}/`;
+  const lan = lanIPs().map(x => `http://${x.address}:${PORT}/`);
+  const primary = PUBLIC ? String(PUBLIC).replace(/\/+$/, '') + '/' : local;
+
+  console.log('  ── 打开这条链接 ──────────────────────────');
+  console.log(`  ▸ ${primary}`);
+  if (PUBLIC) console.log(`    本机备用  ${local}`);
+  if (LAN && lan.length) for (const u of lan.slice(0, 2)) console.log(`    局域网    ${u}`);
+  console.log('  ──────────────────────────────────────────');
+  console.log('  根路径直接进播放器，不用补 /player.html');
   console.log('  Ctrl-C 退出\n');
-  log.info('listening on ' + url);
+
+  // 把可点的链接也写进产物目录，方便从别处复制 / 扫码
+  try { fs.writeFileSync(path.join(ROOT, 'open.url'), primary + '\n'); } catch {}
+
+  log.info('listening on ' + primary + '  [bind ' + HOST + ':' + PORT + ']');
   if (AUTO_OPEN) {
-    const cmd = process.platform === 'win32' ? 'cmd' : process.platform === 'darwin' ? 'open' : 'xdg-open';
-    const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
-    try { spawn(cmd, args, { stdio: 'ignore', detached: true }).unref(); }
-    catch { log.warn('自动打开浏览器失败，请手动访问 ' + url); }
+    const cmd = openURL(primary);
+    log.info('自动打开: ' + (cmd || '失败'));
   }
 });
 
