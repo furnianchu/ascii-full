@@ -1,0 +1,15 @@
+# generated output
+ascii-out/
+chunks/
+*.gz
+sample.mp4
+*.asc
+
+# node
+node_modules/
+npm-debug.log*
+.npm/
+
+# os / editor
+.DS_Store
+*.swp

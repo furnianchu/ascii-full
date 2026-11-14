@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    # 锁死 24.04：ubuntu-latest 会在 2026-11 滚动到 Ubuntu 26.04
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+
+    steps:
+      # v5 起 actions 自身跑在 Node 24；v4 的 node20 已被 runner 强制迁移
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Check ffmpeg
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
+      - name: Static checks (desktop / standalone / banner)
+        run: |
+          node --check desktop/main.js
+          node --check desktop/preload.js
+          node --check desktop/renderer/app.js
+          node -e '
+            const fs=require("fs");
+            for (const p of ["web/player.html","web/standalone.html"]) {
+              const m=fs.readFileSync(p,"utf8").match(/<script>([\s\S]*?)<\/script>/);
+              if(!m) throw new Error(p+" 缺 script 块");
+              new Function(m[1]);
+              console.log("✓",p);
+            }
+          '
+          node bin/banner.js "ASCII FULL" > /dev/null
+          bash -n scripts/build-portable.sh
+
+      - name: Smoke test
+        run: npm test
+
+      - name: CLI smoke
+        run: |
+          node bin/ascii-full.js --version
+          node bin/ascii-full.js --help | head -8

@@ -1,0 +1,20 @@
+{
+  "name": "ascii-full-desktop",
+  "productName": "ascii-full",
+  "version": "1.2.0",
+  "description": "Desktop GUI for ascii-full — turn any video into local truecolor ASCII frames",
+  "main": "main.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --config electron-builder.yml"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  }
+}

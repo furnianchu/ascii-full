@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ascii-full · 真彩字符画工作台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1>ascii-full</h1>
+    <p>把视频翻译成本地可播的真彩字符画 · 全程离线</p>
+  </div>
+  <div id="env" class="env">正在读取环境…</div>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>① 选文件</h2>
+    <div class="row">
+      <label>源视频</label>
+      <input id="src" type="text" placeholder="点右边选一个 mp4 / mov / mkv…" readonly>
+      <button id="pickSrc">浏览…</button>
+    </div>
+    <div class="row">
+      <label>输出目录</label>
+      <input id="out" type="text" placeholder="产物会写到这里" readonly>
+      <button id="pickOut">浏览…</button>
+    </div>
+
+    <h2>② 画质档位</h2>
+    <div class="grid">
+      <div class="field"><label>网格行数</label><input id="grid" type="number" value="60" min="8" max="200"></div>
+      <div class="field"><label>帧率（留空 = 源片原生）</label><input id="fps" type="text" placeholder="如 30"></div>
+      <div class="field"><label>每块帧数</label><input id="chunk" type="number" value="60" min="1"></div>
+      <div class="field"><label>灰度级数</label>
+        <select id="ramp"><option value="70">70 级（默认）</option><option value="10">10 级</option></select>
+      </div>
+      <div class="field"><label>从第几秒</label><input id="from" type="text" placeholder="0"></div>
+      <div class="field"><label>到第几秒</label><input id="to" type="text" placeholder="留空 = 全片"></div>
+    </div>
+    <div class="checks">
+      <label><input id="half" type="checkbox"> ▀ 上下双色（垂直分辨率翻倍，体积约 1.75×）</label>
+      <label><input id="force" type="checkbox"> 覆盖已有产物（--force）</label>
+    </div>
+
+    <h2>③ 启动大字 <small>（命令行版同款）</small></h2>
+    <div class="grid">
+      <div class="field"><label>大字文字</label><input id="logo" type="text" value="ASCII FULL"></div>
+      <div class="field"><label>填充字符</label><input id="logoChar" type="text" value="#" maxlength="1"></div>
+    </div>
+    <div class="checks">
+      <label><input id="noLogo" type="checkbox"> 不显示大字</label>
+      <span class="tip">中文 / ∞ 之类点阵不支持，可在命令行用 --logo-file 放现成 ASCII art</span>
+    </div>
+
+    <div class="actions">
+      <button id="start" class="primary">开始转码</button>
+      <button id="cancel" disabled>取消</button>
+      <button id="open" disabled>打开播放器</button>
+      <button id="export" class="ghost">导出独立 HTML</button>
+    </div>
+    <div class="progress"><div id="bar"></div></div>
+    <div id="status" class="status">待命。转码日志会出现在右边，启动大字也会原样打印。</div>
+  </section>
+
+  <section class="panel logpanel">
+    <div class="loghead"><h2>输出 / 日志</h2><button id="clear">清空</button></div>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+appId: cc.ascii-full.desktop
+productName: ascii-full
+copyright: Copyright (c) 2026 furnianchu
+
+directories:
+  app: .
+  output: ../dist-desktop
+
+# GUI 自身的文件；CLI 与播放器通过 extraResources 放到 resources/ 下，
+# 开发模式和打包模式都用同一套读法（见 main.js 的 RES）。
+files:
+  - main.js
+  - preload.js
+  - renderer/**
+  - package.json
+
+extraResources:
+  - from: ../bin
+    to: bin
+  - from: ../web
+    to: web
+
+# ffmpeg / ffprobe 是可执行二进制，必须从 asar 里解出来才能 spawn
+asarUnpack:
+  - node_modules/ffmpeg-static/**
+  - node_modules/ffprobe-static/**
+
+win:
+  target: nsis
+  artifactName: ascii-full-desktop-${version}-win-${arch}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+
+mac:
+  target: dmg
+  identity: null
+  artifactName: ascii-full-desktop-${version}-mac-${arch}.${ext}
+
+linux:
+  target: AppImage
+  category: Utility
+  artifactName: ascii-full-desktop-${version}-linux-${arch}.${ext}
+
+publish: null

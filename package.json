@@ -1,0 +1,53 @@
+{
+  "name": "ascii-full",
+  "version": "1.2.1",
+  "description": "Offline full-fps 24-bit truecolor ASCII video transcoder — CLI, desktop GUI, portable bundles and a zero-install standalone player (ffmpeg + Node, zero runtime deps)",
+  "bin": {
+    "ascii-full": "bin/ascii-full.js",
+    "ascii-full-term": "bin/ascii-full-term.js",
+    "ascii-full-serve": "bin/serve.js"
+  },
+  "files": [
+    "bin/",
+    "web/",
+    "docs/",
+    "examples/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/smoke.js",
+    "sample": "bash examples/make-sample.sh",
+    "serve": "node bin/serve.js",
+    "desktop": "npm --prefix desktop start",
+    "banner": "node bin/banner.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "ascii",
+    "ascii-art",
+    "video",
+    "ffmpeg",
+    "truecolor",
+    "terminal",
+    "offline",
+    "cli",
+    "electron",
+    "desktop",
+    "portable",
+    "ascii-banner"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/furnianchu/ascii-full.git"
+  },
+  "author": "furnianchu",
+  "bugs": {
+    "url": "https://github.com/furnianchu/ascii-full/issues"
+  },
+  "homepage": "https://github.com/furnianchu/ascii-full#readme",
+  "license": "MIT",
+  "private": false
+}

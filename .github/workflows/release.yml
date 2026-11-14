@@ -1,0 +1,149 @@
+# 打一个 tag 就出一整套 Release，不需要本地装 Electron / ffmpeg / Node。
+#
+#   git tag v1.2.0 && git push origin v1.2.0
+#
+# 产物：
+#   ascii-full-*-win-x64.exe / -mac-*.dmg / -linux-*.AppImage   桌面图形版
+#   ascii-full-*-portable-<平台>.zip|.tar.gz                    免安装终端版（内置 Node + ffmpeg）
+#   ascii-full-*-standalone.html                                零安装单文件播放器
+#   SHA256SUMS.txt
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            tag: linux
+          - os: windows-latest
+            tag: win
+          - os: macos-latest
+            tag: mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+
+      - name: Build desktop app
+        working-directory: desktop
+        run: npm run build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          find desktop/dist-desktop -maxdepth 1 -type f \
+            \( -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' -o -name '*.zip' \) \
+            -exec cp {} artifacts/ \;
+          ls -lh artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ascii-full-desktop-${{ matrix.tag }}
+          path: artifacts/
+          if-no-files-found: error
+
+  portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+            ext: ''
+          - os: windows-latest
+            platform: win-x64
+            ext: '.exe'
+          - os: macos-13
+            platform: darwin-x64
+            ext: ''
+          - os: macos-14
+            platform: darwin-arm64
+            ext: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      # 只是借 npm 拿到对应平台的静态 ffmpeg/ffprobe 二进制，运行时零依赖不变
+      - name: Fetch bundled ffmpeg
+        run: npm install --no-save --no-audit --no-fund ffmpeg-static ffprobe-static
+
+      - name: Assemble portable bundle
+        shell: bash
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          NODE="$(node -p 'process.execPath')"
+          FFMPEG="$(node -p 'require("ffmpeg-static")')"
+          FFPROBE="$(node -p 'require("ffprobe-static").path')"
+          if [[ "${{ matrix.platform }}" == win-* ]]; then
+            NODE="$(cygpath -u "$NODE")"
+            FFMPEG="$(cygpath -u "$FFMPEG")"
+            FFPROBE="$(cygpath -u "$FFPROBE")"
+          fi
+          OUT="dist-portable/ascii-full-${{ matrix.platform }}"
+          bash scripts/build-portable.sh "$OUT" "$NODE" "$FFMPEG" "$FFPROBE" \
+            "${{ matrix.platform }}" "${{ matrix.ext }}"
+          mkdir -p artifacts
+          if [[ "${{ matrix.platform }}" == win-* ]]; then
+            powershell -NoProfile -Command \
+              "Compress-Archive -Path '$OUT' -DestinationPath 'artifacts/ascii-full-${VER}-portable-${{ matrix.platform }}.zip'"
+          else
+            tar -czf "artifacts/ascii-full-${VER}-portable-${{ matrix.platform }}.tar.gz" \
+              -C dist-portable "ascii-full-${{ matrix.platform }}"
+          fi
+          ls -lh artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ascii-full-portable-${{ matrix.platform }}
+          path: artifacts/
+          if-no-files-found: error
+
+  release:
+    needs: [desktop, portable]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ascii-full-*
+          merge-multiple: true
+          path: dist
+
+      - name: Add standalone player and checksums
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          cp web/standalone.html "dist/ascii-full-${VER}-standalone.html"
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          ls -lh
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "ascii-full $GITHUB_REF_NAME" \
+            --generate-notes

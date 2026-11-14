@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ascii-full · 独立播放器</title>
+<style>
+  :root {
+    --bg:#08070a; --panel:#14121a; --line:#2a2534;
+    --ink:#ff52a8; --gold:#dbc291; --text:#e9e4ef; --dim:#8b8398;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--text);
+    font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,"Courier New",monospace; }
+  body { display:flex; flex-direction:column; }
+  header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex;
+    align-items:center; gap:14px; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; color:var(--gold); letter-spacing:.08em; }
+  h1 small { color:var(--dim); font-weight:400; letter-spacing:0; margin-left:8px; }
+  .grow { flex:1; }
+  button, label.btn { background:var(--panel); color:var(--text); border:1px solid var(--line);
+    border-radius:6px; padding:6px 12px; cursor:pointer; font:inherit; font-size:12px; }
+  button:hover, label.btn:hover { border-color:var(--ink); color:var(--ink); }
+  button.on { border-color:var(--ink); color:var(--ink); }
+  input[type=file] { display:none; }
+  .grp { display:flex; gap:4px; }
+  .grp button { padding:6px 9px; }
+  #drop { flex:1; min-height:0; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:14px; padding:24px; text-align:center; overflow:auto; }
+  #drop.hot { background:#17121f; outline:2px dashed var(--ink); outline-offset:-12px; }
+  .big { font-size:clamp(18px,3vw,28px); color:var(--gold); }
+  .hint { color:var(--dim); max-width:640px; font-size:12px; }
+  .hint code { color:var(--ink); }
+  #stage { flex:1; min-height:0; display:none; padding:12px; overflow:auto;
+    background:#060509; cursor:grab; touch-action:none; }
+  #stage.grabbing { cursor:grabbing; }
+  canvas { image-rendering:auto; box-shadow:0 0 60px #000; }
+  #meta { color:var(--dim); font-size:11px; padding:0 18px 8px; min-height:16px; }
+  footer { border-top:1px solid var(--line); padding:10px 18px; display:flex; gap:10px;
+    align-items:center; flex-wrap:wrap; }
+  #seek { flex:1; min-width:120px; accent-color:var(--ink); }
+  #gain { flex:0 0 108px; accent-color:var(--ink); }
+  #stat { color:var(--dim); font-size:11px; min-width:190px; text-align:right; }
+  #zlabel { color:var(--dim); font-size:11px; min-width:74px; }
+  #err { display:none; margin:0 18px 12px; padding:10px 12px; border:1px solid #7a2748;
+    background:#1c1019; color:#ffb3d2; font-size:12px; border-radius:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ascii-full <small>独立播放器 · 零安装 · 全离线</small></h1>
+  <span class="grow"></span>
+  <label class="btn">选择产物目录<input id="pickDir" type="file" webkitdirectory directory multiple></label>
+  <label class="btn">或选 meta.json<input id="pickMeta" type="file" accept=".json,application/json"></label>
+</header>
+
+<div id="drop">
+  <div class="big">把产物文件夹拖到这里</div>
+  <div class="hint">
+    双击本文件即可打开，<b>不用装 Node、不用起服务、不用联网</b>。<br>
+    选中包含 <code>meta.json</code> 与 <code>chunks/</code> 的整个目录；
+    若只选了 <code>meta.json</code>，会再提示你补选 chunks。<br>
+    想自己把视频转成字符画？用 <b>桌面版 ascii-full</b> 或命令行版，转完把目录拖进来就行。
+  </div>
+  <div id="err"></div>
+</div>
+
+<div id="stage"><canvas id="cv"></canvas></div>
+<div id="meta"></div>
+
+<footer>
+  <button id="play">▶ 播放</button>
+  <button id="speed">1×</button>
+  <button id="mode">字符</button>
+  <button id="chase" title="掉帧时是否跳帧追上时间轴">追帧</button>
+  <button id="shot">截 PNG</button>
+  <button id="full">全屏</button>
+
+  <div class="grp">
+    <button id="zout" title="缩小">−</button>
+    <button id="zfit" title="整幅适应屏幕">适应</button>
+    <button id="zreset" title="每字符 8px 基准">100%</button>
+    <button id="zin" title="放大">＋</button>
+  </div>
+  <span id="zlabel">8px/字</span>
+  <label class="hint">亮度 <input id="gain" type="range" min="0.6" max="2.4" step="0.1" value="1"></label>
+  <input id="seek" type="range" min="0" max="1" value="0" step="1" disabled>
+  <span id="stat">等待载入…</span>
+</footer>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const cv = $('#cv'), ctx = cv.getContext('2d', { alpha:false });
+const drop = $('#drop'), stage = $('#stage');
+const MAX_CACHE = Math.max(2, parseInt(new URLSearchParams(location.search).get('cache') || '6', 10) || 6);
+
+let M = null, chunkMap = new Map(), cache = new Map(), pending = new Map();
+let frame = 0, playing = false, speed = 1, blockMode = false;
+let lastT = 0, acc = 0, raf = 0, CELL_W = 8, CELL_H = 16;
+let chase = false;
+// 默认按「每字符 8×16」出真实大画布，不再强行压进屏宽（压到 2px/字会糊成一片）
+const BASE_CW = 8;
+const ZOOMS = [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8];
+let zoom = 1, fit = false, gain = 1;
+
+function fail(msg) {
+  $('#err').style.display = 'block';
+  $('#err').textContent = msg;
+}
+
+async function walk(entry, prefix, out) {
+  return new Promise(resolve => {
+    if (entry.isFile) {
+      entry.file(f => { out.push({ file:f, path: prefix + f.name }); resolve(); }, () => resolve());
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader(), all = [];
+      const readBatch = () => reader.readEntries(async batch => {
+        if (!batch.length) {
+          for (const e of all) await walk(e, prefix + entry.name + '/', out);
+          resolve();
+        } else { all.push(...batch); readBatch(); }
+      }, () => resolve());
+      readBatch();
+    } else resolve();
+  });
+}
+
+async function fromDrop(dt) {
+  const entries = [...dt.items].map(i => i.webkitGetAsEntry ? i.webkitGetAsEntry() : null).filter(Boolean);
+  if (entries.length) {
+    const out = [];
+    for (const e of entries) await walk(e, '', out);
+    return out;
+  }
+  return [...dt.files].map(f => ({ file:f, path: f.webkitRelativePath || f.name }));
+}
+
+async function gunzip(file) {
+  const ab = await file.arrayBuffer();
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('这个浏览器没有 DecompressionStream（需 Chrome 80+ / Firefox 113+ / Safari 16.4+）');
+  }
+  const ds = new DecompressionStream('gzip');
+  const buf = await new Response(new Blob([ab]).stream().pipeThrough(ds)).arrayBuffer();
+  return new Uint8Array(buf);
+}
+
+async function ensureChunk(n) {
+  if (cache.has(n)) {
+    const hit = cache.get(n);
+    cache.delete(n); cache.set(n, hit);              // 真 LRU
+    return hit;
+  }
+  if (pending.has(n)) return pending.get(n);
+  const p = (async () => {
+    try {
+      const name = 'c_' + String(n).padStart(5, '0') + '.gz';
+      const f = chunkMap.get(name);
+      if (!f) throw new Error('缺块 ' + name + '（chunks 目录没选全？）');
+      const u8 = await gunzip(f);
+      cache.set(n, u8);
+      while (cache.size > MAX_CACHE) cache.delete(cache.keys().next().value);
+      return u8;
+    } finally { pending.delete(n); }                // 失败也要清，允许重试
+  })();
+  pending.set(n, p);
+  return p;
+}
+
+function cellSize() {
+  if (!M) return { cw:BASE_CW, ch:BASE_CW*2 };
+  if (fit) {
+    const availW = Math.max(320, stage.clientWidth - 24);
+    const availH = Math.max(200, stage.clientHeight - 24);
+    const cw = Math.max(2, Math.min(availW / M.W, availH / (M.H * 2)));
+    return { cw, ch:cw*2 };
+  }
+  const cw = BASE_CW * zoom;
+  return { cw, ch:cw*2 };
+}
+
+function resize() {
+  if (!M) return;
+  const { cw, ch } = cellSize();
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  CELL_W = cw; CELL_H = ch;
+  cv.width = Math.round(M.W * CELL_W * dpr);
+  cv.height = Math.round(M.H * CELL_H * dpr);
+  cv.style.width = (M.W * CELL_W) + 'px';
+  cv.style.height = (M.H * CELL_H) + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.textBaseline = 'top';
+  ctx.font = Math.max(7, Math.round(CELL_H * 0.92)) + 'px "Courier New",Courier,monospace';
+  $('#zlabel').textContent = fit ? '适应' : (cw.toFixed(cw < 10 ? 1 : 0) + 'px/字');
+  draw(frame);
+}
+
+function setZoom(z) {
+  zoom = Math.max(ZOOMS[0], Math.min(ZOOMS[ZOOMS.length-1], z));
+  fit = false;
+  $('#zfit').classList.remove('on');
+  resize();
+}
+function zoomStep(dir) {
+  let i = 0, best = Infinity;
+  ZOOMS.forEach((z, k) => { const d = Math.abs(z - zoom); if (d < best) { best = d; i = k; } });
+  setZoom(ZOOMS[Math.max(0, Math.min(ZOOMS.length-1, i + dir))]);
+}
+
+// ---- 渲染 ----------------------------------------------------------------
+// 51120 cells/帧 × 24fps ≈ 123 万次/秒。旧版每 cell 都做 3 次 Math.pow +
+// 拼 rgb 字符串 + 设 fillStyle + fillText：光 JS 层就 18ms/帧，加上 canvas
+// 调用远超 41.7ms 预算 → 数据明明 24fps，肉眼却只有 10 来帧。
+// 现在：增益改成 256 项查表；色块走 ImageData 一次 putImageData + drawImage；
+// 字符按颜色分组批量绘制，空格直接跳过。
+const GAIN_LUT = new Uint8Array(256);
+let gainLutFor = -1;
+function buildGainLut() {
+  if (gainLutFor === gain) return;
+  for (let v = 0; v < 256; v++)
+    GAIN_LUT[v] = Math.max(0, Math.min(255, Math.round(255 * Math.pow(Math.min(1, (v/255) * gain), 0.9))));
+  gainLutFor = gain;
+}
+function css(r, g, b) {
+  return 'rgb(' + GAIN_LUT[r] + ',' + GAIN_LUT[g] + ',' + GAIN_LUT[b] + ')';
+}
+
+let offCv = null, offCtx = null, offImg = null;
+function ensureOffscreen() {
+  const h = M.half ? M.H * 2 : M.H;
+  if (!offCv || offCv.width !== M.W || offCv.height !== h) {
+    offCv = document.createElement('canvas');
+    offCv.width = M.W; offCv.height = h;
+    offCtx = offCv.getContext('2d', { alpha:false });
+    offImg = offCtx.createImageData(M.W, h);
+  }
+  return offImg;
+}
+
+// 色块模式：每 cell 一个纯色像素（half 时上下各一行），
+// 整帧只做 1 次 putImageData + 1 次 drawImage，绕开 5 万次 canvas API 调用。
+function drawBlocks(u8, base, cw, ch) {
+  const img = ensureOffscreen(), d = img.data;
+  const W = M.W, H = M.H, bpc = M.bytesPerCell, half = M.half;
+  const rowBytes = W * 4;
+  let p = 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const o = base + (y * W + x) * bpc;
+      d[p]   = GAIN_LUT[u8[o+1]]; d[p+1] = GAIN_LUT[u8[o+2]];
+      d[p+2] = GAIN_LUT[u8[o+3]]; d[p+3] = 255;
+      if (half) {
+        const q = p + rowBytes;
+        d[q]   = GAIN_LUT[u8[o+4]]; d[q+1] = GAIN_LUT[u8[o+5]];
+        d[q+2] = GAIN_LUT[u8[o+6]]; d[q+3] = 255;
+      }
+      p += 4;
+    }
+    if (half) p += rowBytes;
+  }
+  offCtx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(offCv, 0, 0, W, half ? H*2 : H, 0, 0, W*cw, H*ch);
+}
+
+// 字符模式：按「颜色」分组，一组只设一次 fillStyle；ramp[0]=' ' 直接不画。
+// 真实画面相邻像素颜色高度重复，fillStyle 赋值从 5 万次降到几百~几千次。
+function drawText(u8, base, cw, ch) {
+  const W = M.W, H = M.H, bpc = M.bytesPerCell, ramp = M.ramp, half = M.half;
+  const fg = new Map(), bg = half ? new Map() : null;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const o = base + (y * W + x) * bpc;
+      const idx = u8[o];
+      const key = (u8[o+1] << 16) | (u8[o+2] << 8) | u8[o+3];
+      if (ramp[idx] !== ' ') {
+        let a = fg.get(key); if (!a) fg.set(key, a = []);
+        a.push(x, y, idx);
+      }
+      if (bg) {
+        const bk = (u8[o+4] << 16) | (u8[o+5] << 8) | u8[o+6];
+        let a = bg.get(bk); if (!a) bg.set(bk, a = []);
+        a.push(x, y);
+      }
+    }
+  }
+  if (bg) {
+    for (const [key, a] of bg) {
+      ctx.fillStyle = css((key>>16)&255, (key>>8)&255, key&255);
+      for (let i = 0; i < a.length; i += 2) ctx.fillRect(a[i]*cw, a[i+1]*ch, cw+.5, ch+.5);
+    }
+  }
+  const dy = ch * .04;
+  for (const [key, a] of fg) {
+    ctx.fillStyle = css((key>>16)&255, (key>>8)&255, key&255);
+    if (half) {
+      for (let i = 0; i < a.length; i += 3) ctx.fillText('▀', a[i]*cw, a[i+1]*ch - dy);
+    } else {
+      for (let i = 0; i < a.length; i += 3) ctx.fillText(ramp[a[i+2]] || ' ', a[i]*cw, a[i+1]*ch - dy);
+    }
+  }
+}
+
+let drawnCount = 0, fpsWindowT = 0, fpsValue = 0;
+function noteDraw(t) {
+  drawnCount++;
+  if (!fpsWindowT) { fpsWindowT = t; return; }
+  const dt = t - fpsWindowT;
+  if (dt >= 500) { fpsValue = drawnCount * 1000 / dt; drawnCount = 0; fpsWindowT = t; }
+}
+
+function draw(f) {
+  if (!M) return;
+  const cw = CELL_W, ch = CELL_H;
+  const n = Math.floor(f / M.chunkFrames), k = f % M.chunkFrames;
+  const u8 = cache.get(n);
+  ctx.fillStyle = '#08070a';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  if (!u8) { $('#stat').textContent = '缓冲中… 帧 ' + f + '/' + M.frames; return; }
+  buildGainLut();
+  const base = k * M.frameBytes;
+  if (blockMode) drawBlocks(u8, base, cw, ch);
+  else drawText(u8, base, cw, ch);
+  noteDraw(performance.now());
+  $('#seek').value = String(f);
+  const rate = fpsValue ? fpsValue.toFixed(1) : '…';
+  $('#stat').textContent = '帧 ' + (f+1) + '/' + M.frames + '  ' + (f / M.fps).toFixed(1) + 's' +
+    '  ·  渲染 ' + rate + '/' + M.fps.toFixed(0) + 'fps' +
+    '  ·  ' + cache.size + '/' + MAX_CACHE + ' 块' + (chase ? ' · 追帧' : '');
+}
+
+// 只保留「最新一帧」的绘制请求：fetch/解压慢时不排队，避免越积越卡。
+let inflight = false, wantFrame = -1;
+function requestDraw(f) {
+  wantFrame = f;
+  if (inflight) return;
+  inflight = true;
+  const run = () => {
+    const tf = wantFrame;
+    ensureChunk(Math.floor(tf / M.chunkFrames)).then(() => {
+      draw(tf);
+      if (wantFrame !== tf) run(); else inflight = false;
+    }).catch(e => { inflight = false; fail(String(e)); });
+  };
+  run();
+}
+
+function tick(t) {
+  raf = requestAnimationFrame(tick);
+  if (!playing || !M) return;
+  if (!lastT) lastT = t;
+  acc += (t - lastT) * speed;
+  lastT = t;
+  const step = 1000 / M.fps;
+  let steps = 0;
+  const maxStep = chase ? 8 : 1;       // 默认「不追帧」：慢就均匀慢放，不跳帧
+  while (acc >= step && steps < maxStep) { acc -= step; frame = (frame + 1) % M.frames; steps++; }
+  if (acc > step * 2) acc = step * 2; // 丢弃积压，不无限追赶
+  if (!steps) return;
+  const need = Math.floor(frame / M.chunkFrames);
+  requestDraw(frame);
+  ensureChunk((need + 1) % M.chunks).catch(() => {});
+}
+
+
+async function load(files) {
+  $('#err').style.display = 'none';
+  let metaFile = null;
+  const found = new Map();
+  for (const { file, path } of files) {
+    if (/meta\.json$/i.test(path)) metaFile = file;
+    const m = /(?:^|\/)chunks\/(c_\d+\.gz)$/.exec(path);
+    if (m) found.set(m[1], file);
+  }
+  if (!metaFile) { fail('没找到 meta.json —— 请选整个产物目录，或单独选 meta.json。'); return; }
+  if (!found.size) { fail('没找到 chunks/*.gz —— 请选包含 chunks 子目录的整个产物文件夹。'); return; }
+  try {
+    M = JSON.parse(await metaFile.text());
+    if (M.magic !== 'ASCFULL1') throw new Error('meta.json 不是 ascii-full 产物');
+  } catch (e) { fail('读 meta.json 失败：' + e.message); return; }
+
+  chunkMap = found; cache.clear(); pending.clear(); frame = 0; acc = 0; lastT = 0;
+  $('#meta').textContent = `${M.src}  ${M.W}×${M.H}  ${M.fps.toFixed(2)}fps  ${M.frames} 帧  ` +
+    `${M.half ? '上下双色' : '每字符 truecolor'}  ramp ${M.ramp.length} 级  ·  ${chunkMap.size} 个块`;
+  $('#seek').max = String(M.frames - 1);
+  $('#seek').disabled = false;
+  drop.style.display = 'none';
+  stage.style.display = 'block';
+  await ensureChunk(0);
+  resize();
+  playing = true;
+  $('#play').textContent = '⏸ 暂停';
+}
+
+$('#pickDir').onchange = e => load([...e.target.files].map(f => ({ file:f, path: f.webkitRelativePath || f.name })));
+$('#pickMeta').onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  fail('已选 meta.json；请再用「选择产物目录」把含 chunks/ 的目录选进来。');
+};
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('hot'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('hot'));
+drop.addEventListener('drop', async e => {
+  e.preventDefault(); drop.classList.remove('hot');
+  try { await load(await fromDrop(e.dataTransfer)); }
+  catch (err) { fail('读取失败：' + err.message); }
+});
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => e.preventDefault());
+
+$('#play').onclick = () => {
+  if (!M) return;
+  playing = !playing; lastT = 0;
+  $('#play').textContent = playing ? '⏸ 暂停' : '▶ 播放';
+  $('#play').classList.toggle('on', !playing);
+};
+const SPEEDS = [1, 2, 4, 0.5];
+let si = 0;
+$('#speed').onclick = () => { si = (si + 1) % SPEEDS.length; speed = SPEEDS[si]; $('#speed').textContent = speed + '×'; };
+$('#mode').onclick = () => { blockMode = !blockMode; $('#mode').textContent = blockMode ? '色块' : '字符'; draw(frame); };
+$('#seek').oninput = e => {
+  frame = +e.target.value;
+  ensureChunk(Math.floor(frame / M.chunkFrames)).then(() => draw(frame)).catch(err => fail(String(err)));
+};
+$('#shot').onclick = () => {
+  const a = document.createElement('a');
+  a.download = 'frame_' + frame + '.png'; a.href = cv.toDataURL('image/png'); a.click();
+};
+$('#full').onclick = () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else stage.requestFullscreen().then(() => { if (fit) resize(); }).catch(() => {});
+};
+$('#zin').onclick = () => zoomStep(1);
+$('#zout').onclick = () => zoomStep(-1);
+$('#zreset').onclick = () => setZoom(1);
+$('#zfit').onclick = () => {
+  fit = !fit;
+  $('#zfit').classList.toggle('on', fit);
+  resize();
+  if (fit) { stage.scrollLeft = 0; stage.scrollTop = 0; }
+};
+$('#gain').oninput = e => { gain = parseFloat(e.target.value); draw(frame); };
+$('#chase').onclick = () => { chase = !chase; $('#chase').classList.toggle('on', chase); $('#chase').textContent = chase ? '平滑' : '追帧'; };
+
+// 拖动平移 / 双指缩放
+let drag = null, pinch = null;
+function tdist(t) { return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY); }
+stage.addEventListener('pointerdown', e => {
+  if (pinch) return;
+  drag = { x:e.clientX, y:e.clientY, sl:stage.scrollLeft, st:stage.scrollTop };
+  stage.classList.add('grabbing');
+  try { stage.setPointerCapture(e.pointerId); } catch (_) {}
+});
+stage.addEventListener('pointermove', e => {
+  if (!drag || pinch) return;
+  stage.scrollLeft = drag.sl - (e.clientX - drag.x);
+  stage.scrollTop  = drag.st  - (e.clientY - drag.y);
+});
+['pointerup','pointercancel','pointerleave'].forEach(ev =>
+  stage.addEventListener(ev, () => { drag = null; stage.classList.remove('grabbing'); }));
+stage.addEventListener('touchstart', e => {
+  if (e.touches.length === 2) { drag = null; pinch = { d:tdist(e.touches), z:zoom }; }
+}, { passive:true });
+stage.addEventListener('touchmove', e => {
+  if (e.touches.length === 2 && pinch) { e.preventDefault(); setZoom(pinch.z * tdist(e.touches) / pinch.d); }
+}, { passive:false });
+stage.addEventListener('touchend', e => { if (e.touches.length < 2) pinch = null; }, { passive:true });
+stage.addEventListener('wheel', e => {
+  if (!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault();
+  setZoom(zoom * (e.deltaY < 0 ? 1.15 : 0.87));
+}, { passive:false });
+
+document.addEventListener('keydown', e => {
+  if (!M) return;
+  if (e.code === 'Space') { e.preventDefault(); $('#play').click(); }
+  if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
+    frame = (frame + (e.code === 'ArrowRight' ? 1 : -1) + M.frames) % M.frames;
+    ensureChunk(Math.floor(frame / M.chunkFrames)).then(() => draw(frame));
+  }
+  if (e.key === '+' || e.key === '=') zoomStep(1);
+  if (e.key === '-') zoomStep(-1);
+});
+window.addEventListener('resize', () => { if (fit) resize(); });
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

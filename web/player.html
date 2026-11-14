@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ascii-full · 真彩字符画 · 本地播放</title>
+<style>
+  :root { --gold:#dbc291; --pink:#f00093; --bg:#08070a; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--gold);
+    font-family:"Courier New",Courier,monospace; }
+  body { display:flex; flex-direction:column; overflow:hidden; }
+  header { flex:0 0 auto; padding:9px 14px; border-bottom:1px solid #dbc29133;
+    font-size:12px; letter-spacing:.05em; display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  header b { color:#fff; font-size:13px; }
+  header .dim { color:#7b7078; }
+  #stage { flex:1 1 auto; min-height:0; display:block; overflow:auto;
+    background:radial-gradient(60vw 60vh at 50% 45%,#dbc2910d,transparent 70%);
+    cursor:grab; touch-action:none; }
+  #stage.grabbing { cursor:grabbing; }
+  canvas { display:block; image-rendering:auto; box-shadow:0 0 60px #000; }
+  footer { flex:0 0 auto; padding:9px 14px 12px; border-top:1px solid #dbc29133;
+    font-size:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button,select { font:12px "Courier New",Courier,monospace; color:var(--gold);
+    background:#161616; border:1px solid #dbc29155; padding:5px 10px; border-radius:2px; cursor:pointer; }
+  button:hover,select:hover { border-color:var(--gold); }
+  button.on { border-color:var(--pink); color:#ff8db8; }
+  .grp { display:flex; gap:4px; align-items:center; }
+  .grp button { padding:5px 8px; }
+  input[type=range] { flex:1 1 200px; accent-color:var(--pink); }
+  #gain { flex:0 0 108px; }
+  #stat { color:#7b7078; white-space:nowrap; font-size:11px; }
+  #zlabel { color:#7b7078; font-size:11px; min-width:74px; }
+  #err { color:#ff6b7f; padding:14px; font-size:13px; line-height:1.8; }
+  .hint { color:#5d5560; font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <b>ascii-full · 真彩字符画</b>
+  <span id="metaLine" class="dim">载入中…</span>
+  <span class="dim">· 纯本地 · 无外部请求</span>
+</header>
+
+<div id="stage"><canvas id="cv"></canvas><div id="err" hidden></div></div>
+
+<footer>
+  <button id="play">▶ 播放</button>
+  <button id="speed">1×</button>
+  <button id="mode">字符</button>
+  <button id="chase" title="掉帧时是否跳帧追上时间轴">追帧</button>
+  <button id="shot">截 PNG</button>
+  <button id="full">全屏</button>
+
+  <div class="grp">
+    <button id="zout" title="缩小">−</button>
+    <button id="zfit" title="整幅适应屏幕">适应</button>
+    <button id="zreset" title="每字符 8px 基准">100%</button>
+    <button id="zin" title="放大">＋</button>
+  </div>
+  <span id="zlabel">8px/字</span>
+
+  <label class="hint">亮度 <input id="gain" type="range" min="0.6" max="2.4" step="0.1" value="1"></label>
+  <input id="seek" type="range" min="0" max="1" value="0" step="1">
+  <span id="stat">—</span>
+  <span class="hint">拖动画布可平移 · 双指缩放</span>
+</footer>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const cv = $('#cv'), ctx = cv.getContext('2d', { alpha:false });
+const stage = $('#stage');
+let M = null, cache = new Map(), pending = new Map();
+// 有界 LRU：默认只驻留 6 块解压后的帧数据；可用 ?cache=12 调整。
+// cache 是内存缓存（Uint8Array），磁盘上的 chunks/*.gz 是产物，两者互不相干。
+const MAX_CACHE = Math.max(2, parseInt(new URLSearchParams(location.search).get('cache') || '6', 10) || 6);
+let frame = 0, playing = false, speed = 1, blockMode = false;
+let lastT = 0, acc = 0, raf = 0;
+let chase = false;
+let CELL_W = 8, CELL_H = 16;
+
+// ---- 显示倍率 ------------------------------------------------------------
+// 旧版把 W 列强行压进屏幕宽（每字符常只有 2px、font 3.68px），字根本画不出来，
+// 看上去就是一片暗糊的点。现在默认按「每字符 8×16 逻辑像素」出真实大画布，
+// stage 用 overflow:auto 滚动，可放大到 8×（约 64px/字）看清单个字形的笔画。
+const BASE_CW = 8;
+const ZOOMS = [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8];
+let zoom = 1, fit = false, gain = 1;
+
+function fail(msg) {
+  $('#err').hidden = false;
+  $('#err').innerHTML = msg;
+  cv.style.display = 'none';
+  console.error(msg);
+}
+
+async function loadMeta() {
+  const r = await fetch('meta.json');
+  if (!r.ok) throw new Error('meta.json 读取失败（' + r.status + '）');
+  return r.json();
+}
+
+async function ensureChunk(n) {
+  if (cache.has(n)) {
+    const hit = cache.get(n);
+    cache.delete(n); cache.set(n, hit);      // 命中即挪到末尾，才是真 LRU 而非 FIFO
+    return hit;
+  }
+  if (pending.has(n)) return pending.get(n);
+  const p = (async () => {
+    try {
+      const name = 'chunks/c_' + String(n).padStart(5, '0') + '.gz';
+      const r = await fetch(name);
+      if (!r.ok) throw new Error('缺块 ' + name);
+      let buf;
+      if (typeof DecompressionStream !== 'undefined') {
+        const ds = new DecompressionStream('gzip');
+        buf = await new Response(r.body.pipeThrough(ds)).arrayBuffer();
+      } else {
+        fail('这个浏览器没有 DecompressionStream（需 Chrome 80+ / Firefox 113+ / Safari 16.4+）。<br>换新版浏览器，或用 ascii-full-term 在终端看。');
+        throw new Error('no DecompressionStream');
+      }
+      const u8 = new Uint8Array(buf);
+      cache.set(n, u8);
+      while (cache.size > MAX_CACHE) cache.delete(cache.keys().next().value);
+      return u8;
+    } finally {
+      // 失败也必须清：否则这个 rejected promise 会永久留在 pending 里，
+      // 之后所有 ensureChunk(n) 都直接拿到它，永远不会重试。
+      pending.delete(n);
+    }
+  })();
+  pending.set(n, p);
+  return p;
+}
+
+function cellSize() {
+  if (!M) return { cw:BASE_CW, ch:BASE_CW*2 };
+  if (fit) {
+    const availW = Math.max(320, stage.clientWidth - 24);
+    const availH = Math.max(200, stage.clientHeight - 24);
+    const cw = Math.max(2, Math.min(availW / M.W, availH / (M.H * 2)));
+    return { cw, ch:cw*2 };
+  }
+  const cw = BASE_CW * zoom;
+  return { cw, ch:cw*2 };
+}
+
+function applySize() {
+  if (!M) return;
+  const { cw, ch } = cellSize();
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width  = Math.round(M.W * cw * dpr);
+  cv.height = Math.round(M.H * ch * dpr);
+  cv.style.width  = (M.W * cw) + 'px';
+  cv.style.height = (M.H * ch) + 'px';
+  CELL_W = cw; CELL_H = ch;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.textBaseline = 'top';
+  // 字号不再被压到 3.x px：放大时字形笔画才看得清
+  ctx.font = Math.max(7, Math.round(ch * 0.92)) + 'px "Courier New",Courier,monospace';
+  $('#zlabel').textContent = fit ? '适应' : (cw.toFixed(cw < 10 ? 1 : 0) + 'px/字');
+  draw(frame);
+}
+
+function setZoom(z) {
+  zoom = Math.max(ZOOMS[0], Math.min(ZOOMS[ZOOMS.length-1], z));
+  fit = false;
+  $('#zfit').classList.remove('on');
+  applySize();
+}
+
+function zoomStep(dir) {
+  let i = 0, best = Infinity;
+  ZOOMS.forEach((z, k) => { const d = Math.abs(z - zoom); if (d < best) { best = d; i = k; } });
+  setZoom(ZOOMS[Math.max(0, Math.min(ZOOMS.length-1, i + dir))]);
+}
+
+// ---- 渲染 ----------------------------------------------------------------
+// 51120 cells/帧 × 24fps ≈ 123 万次/秒。旧版每 cell 都做 3 次 Math.pow +
+// 拼 rgb 字符串 + 设 fillStyle + fillText：光 JS 层就 18ms/帧，加上 canvas
+// 调用远超 41.7ms 预算 → 数据明明 24fps，肉眼却只有 10 来帧。
+// 现在：增益改成 256 项查表；色块走 ImageData 一次 putImageData + drawImage；
+// 字符按颜色分组批量绘制，空格直接跳过。
+const GAIN_LUT = new Uint8Array(256);
+let gainLutFor = -1;
+function buildGainLut() {
+  if (gainLutFor === gain) return;
+  for (let v = 0; v < 256; v++)
+    GAIN_LUT[v] = Math.max(0, Math.min(255, Math.round(255 * Math.pow(Math.min(1, (v/255) * gain), 0.9))));
+  gainLutFor = gain;
+}
+function css(r, g, b) {
+  return 'rgb(' + GAIN_LUT[r] + ',' + GAIN_LUT[g] + ',' + GAIN_LUT[b] + ')';
+}
+
+let offCv = null, offCtx = null, offImg = null;
+function ensureOffscreen() {
+  const h = M.half ? M.H * 2 : M.H;
+  if (!offCv || offCv.width !== M.W || offCv.height !== h) {
+    offCv = document.createElement('canvas');
+    offCv.width = M.W; offCv.height = h;
+    offCtx = offCv.getContext('2d', { alpha:false });
+    offImg = offCtx.createImageData(M.W, h);
+  }
+  return offImg;
+}
+
+// 色块模式：每 cell 一个纯色像素（half 时上下各一行），
+// 整帧只做 1 次 putImageData + 1 次 drawImage，绕开 5 万次 canvas API 调用。
+function drawBlocks(u8, base, cw, ch) {
+  const img = ensureOffscreen(), d = img.data;
+  const W = M.W, H = M.H, bpc = M.bytesPerCell, half = M.half;
+  const rowBytes = W * 4;
+  let p = 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const o = base + (y * W + x) * bpc;
+      d[p]   = GAIN_LUT[u8[o+1]]; d[p+1] = GAIN_LUT[u8[o+2]];
+      d[p+2] = GAIN_LUT[u8[o+3]]; d[p+3] = 255;
+      if (half) {
+        const q = p + rowBytes;
+        d[q]   = GAIN_LUT[u8[o+4]]; d[q+1] = GAIN_LUT[u8[o+5]];
+        d[q+2] = GAIN_LUT[u8[o+6]]; d[q+3] = 255;
+      }
+      p += 4;
+    }
+    if (half) p += rowBytes;
+  }
+  offCtx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(offCv, 0, 0, W, half ? H*2 : H, 0, 0, W*cw, H*ch);
+}
+
+// 字符模式：按「颜色」分组，一组只设一次 fillStyle；ramp[0]=' ' 直接不画。
+// 真实画面相邻像素颜色高度重复，fillStyle 赋值从 5 万次降到几百~几千次。
+function drawText(u8, base, cw, ch) {
+  const W = M.W, H = M.H, bpc = M.bytesPerCell, ramp = M.ramp, half = M.half;
+  const fg = new Map(), bg = half ? new Map() : null;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const o = base + (y * W + x) * bpc;
+      const idx = u8[o];
+      const key = (u8[o+1] << 16) | (u8[o+2] << 8) | u8[o+3];
+      if (ramp[idx] !== ' ') {
+        let a = fg.get(key); if (!a) fg.set(key, a = []);
+        a.push(x, y, idx);
+      }
+      if (bg) {
+        const bk = (u8[o+4] << 16) | (u8[o+5] << 8) | u8[o+6];
+        let a = bg.get(bk); if (!a) bg.set(bk, a = []);
+        a.push(x, y);
+      }
+    }
+  }
+  if (bg) {
+    for (const [key, a] of bg) {
+      ctx.fillStyle = css((key>>16)&255, (key>>8)&255, key&255);
+      for (let i = 0; i < a.length; i += 2) ctx.fillRect(a[i]*cw, a[i+1]*ch, cw+.5, ch+.5);
+    }
+  }
+  const dy = ch * .04;
+  for (const [key, a] of fg) {
+    ctx.fillStyle = css((key>>16)&255, (key>>8)&255, key&255);
+    if (half) {
+      for (let i = 0; i < a.length; i += 3) ctx.fillText('▀', a[i]*cw, a[i+1]*ch - dy);
+    } else {
+      for (let i = 0; i < a.length; i += 3) ctx.fillText(ramp[a[i+2]] || ' ', a[i]*cw, a[i+1]*ch - dy);
+    }
+  }
+}
+
+let drawnCount = 0, fpsWindowT = 0, fpsValue = 0;
+function noteDraw(t) {
+  drawnCount++;
+  if (!fpsWindowT) { fpsWindowT = t; return; }
+  const dt = t - fpsWindowT;
+  if (dt >= 500) { fpsValue = drawnCount * 1000 / dt; drawnCount = 0; fpsWindowT = t; }
+}
+
+function draw(f) {
+  if (!M) return;
+  const cw = CELL_W, ch = CELL_H;
+  const n = Math.floor(f / M.chunkFrames), k = f % M.chunkFrames;
+  const u8 = cache.get(n);
+  ctx.fillStyle = '#08070a';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  if (!u8) { $('#stat').textContent = '缓冲中… 帧 ' + f + '/' + M.frames; return; }
+  buildGainLut();
+  const base = k * M.frameBytes;
+  if (blockMode) drawBlocks(u8, base, cw, ch);
+  else drawText(u8, base, cw, ch);
+  noteDraw(performance.now());
+  $('#seek').value = String(f);
+  const rate = fpsValue ? fpsValue.toFixed(1) : '…';
+  $('#stat').textContent = '帧 ' + (f+1) + '/' + M.frames + '  ' + (f / M.fps).toFixed(1) + 's' +
+    '  ·  渲染 ' + rate + '/' + M.fps.toFixed(0) + 'fps' +
+    '  ·  ' + cache.size + '/' + MAX_CACHE + ' 块' + (chase ? ' · 追帧' : '');
+}
+
+// 只保留「最新一帧」的绘制请求：fetch/解压慢时不排队，避免越积越卡。
+let inflight = false, wantFrame = -1;
+function requestDraw(f) {
+  wantFrame = f;
+  if (inflight) return;
+  inflight = true;
+  const run = () => {
+    const tf = wantFrame;
+    ensureChunk(Math.floor(tf / M.chunkFrames)).then(() => {
+      draw(tf);
+      if (wantFrame !== tf) run(); else inflight = false;
+    }).catch(e => { inflight = false; fail(String(e)); });
+  };
+  run();
+}
+
+function tick(t) {
+  raf = requestAnimationFrame(tick);
+  if (!playing || !M) return;
+  if (!lastT) lastT = t;
+  acc += (t - lastT) * speed;
+  lastT = t;
+  const step = 1000 / M.fps;
+  let steps = 0;
+  const maxStep = chase ? 8 : 1;       // 默认「不追帧」：慢就均匀慢放，不跳帧
+  while (acc >= step && steps < maxStep) { acc -= step; frame = (frame + 1) % M.frames; steps++; }
+  if (acc > step * 2) acc = step * 2; // 丢弃积压，不无限追赶
+  if (!steps) return;
+  const need = Math.floor(frame / M.chunkFrames);
+  requestDraw(frame);
+  ensureChunk((need + 1) % M.chunks).catch(() => {});
+}
+
+
+// ---- 拖动平移 / 双指缩放 --------------------------------------------------
+let drag = null, pinch = null;
+function tdist(t) { return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY); }
+stage.addEventListener('pointerdown', e => {
+  if (pinch) return;
+  drag = { x:e.clientX, y:e.clientY, sl:stage.scrollLeft, st:stage.scrollTop };
+  stage.classList.add('grabbing');
+  try { stage.setPointerCapture(e.pointerId); } catch (_) {}
+});
+stage.addEventListener('pointermove', e => {
+  if (!drag || pinch) return;
+  stage.scrollLeft = drag.sl - (e.clientX - drag.x);
+  stage.scrollTop  = drag.st  - (e.clientY - drag.y);
+});
+['pointerup','pointercancel','pointerleave'].forEach(ev =>
+  stage.addEventListener(ev, () => { drag = null; stage.classList.remove('grabbing'); }));
+stage.addEventListener('touchstart', e => {
+  if (e.touches.length === 2) { drag = null; pinch = { d:tdist(e.touches), z:zoom }; }
+}, { passive:true });
+stage.addEventListener('touchmove', e => {
+  if (e.touches.length === 2 && pinch) {
+    e.preventDefault();
+    setZoom(pinch.z * tdist(e.touches) / pinch.d);
+  }
+}, { passive:false });
+stage.addEventListener('touchend', e => { if (e.touches.length < 2) pinch = null; }, { passive:true });
+stage.addEventListener('wheel', e => {
+  if (!e.ctrlKey && !e.metaKey) return;   // 普通滚轮留给页面滚动
+  e.preventDefault();
+  setZoom(zoom * (e.deltaY < 0 ? 1.15 : 0.87));
+}, { passive:false });
+
+async function main() {
+  try {
+    M = await loadMeta();
+  } catch (e) {
+    fail('读不到 meta.json。<br>请在本目录起服务再打开，不要直接双击 file://：<br><br>' +
+         '<code>ascii-full-serve &lt;输出目录&gt;</code> 或 <code>python3 -m http.server 8080</code><br>' +
+         '然后开 <code>http://localhost:8080/player.html</code><br><br>' + e.message);
+    return;
+  }
+  $('#metaLine').textContent = M.src + '  ' + M.W + '×' + M.H + '  ' + M.fps.toFixed(2) + 'fps  ' +
+    M.frames + ' 帧  ' + (M.half ? '上下双色' : '每字符 truecolor') + '  ramp ' + M.ramp.length + '级';
+  $('#seek').max = String(M.frames - 1);
+  $('#mode').textContent = blockMode ? '色块' : '字符';
+  await ensureChunk(0);
+  applySize();
+  window.addEventListener('resize', () => { if (fit) applySize(); });
+  raf = requestAnimationFrame(tick);
+  playing = true;
+}
+
+$('#play').onclick = () => {
+  playing = !playing; lastT = 0;
+  $('#play').textContent = playing ? '⏸ 暂停' : '▶ 播放';
+  $('#play').classList.toggle('on', !playing);
+};
+const SPEEDS = [1, 2, 4, 0.5];
+let si = 0;
+$('#speed').onclick = () => { si = (si + 1) % SPEEDS.length; speed = SPEEDS[si]; $('#speed').textContent = speed + '×'; };
+$('#mode').onclick = () => { blockMode = !blockMode; $('#mode').textContent = blockMode ? '色块' : '字符'; draw(frame); };
+$('#seek').oninput = e => { frame = +e.target.value; const n = Math.floor(frame / M.chunkFrames); ensureChunk(n).then(() => draw(frame)); };
+$('#shot').onclick = () => { const a = document.createElement('a'); a.download = 'frame_' + frame + '.png'; a.href = cv.toDataURL('image/png'); a.click(); };
+$('#full').onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); else stage.requestFullscreen().then(() => { if (fit) applySize(); }); };
+$('#zin').onclick = () => zoomStep(1);
+$('#zout').onclick = () => zoomStep(-1);
+$('#zreset').onclick = () => setZoom(1);
+$('#zfit').onclick = () => {
+  fit = !fit;
+  $('#zfit').classList.toggle('on', fit);
+  applySize();
+  if (fit) { stage.scrollLeft = 0; stage.scrollTop = 0; }
+};
+$('#gain').oninput = e => { gain = parseFloat(e.target.value); draw(frame); };
+$('#chase').onclick = () => { chase = !chase; $('#chase').classList.toggle('on', chase); $('#chase').textContent = chase ? '平滑' : '追帧'; };
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); $('#play').click(); }
+  if (e.code === 'ArrowRight') { frame = (frame + 1) % M.frames; ensureChunk(Math.floor(frame / M.chunkFrames)).then(() => draw(frame)); }
+  if (e.code === 'ArrowLeft')  { frame = (frame - 1 + M.frames) % M.frames; ensureChunk(Math.floor(frame / M.chunkFrames)).then(() => draw(frame)); }
+  if (e.key === '+' || e.key === '=') zoomStep(1);
+  if (e.key === '-') zoomStep(-1);
+});
+main();
+</script>
+</body>
+</html>
