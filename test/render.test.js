@@ -6,6 +6,7 @@
 'use strict';
 const fs = require('fs'), path = require('path'), vm = require('vm');
 const ROOT = path.resolve(__dirname, '..');
+const CORE = require(path.join(ROOT, 'web', '_render-core.js'));
 
 function mockCtx() {
   const ops = []; let style = '';
@@ -37,7 +38,12 @@ function run(code, meta, u8, blockMode, gain) {
     M:meta, CELL_W:8, CELL_H:16, gain, blockMode, chase:false, MAX_CACHE:6,
     // draw() 的状态栏会读音频状态；渲染等价性测试里按「无音轨」情形 mock
     masterEl:null, AUD:[], muted:false, offsetSec:0,
-    ctx, cv:{ width:meta.W*8, height:meta.H*16 },
+    ctx, cv:{ width:meta.W*8, height:meta.H*16, hidden:false },
+    // v1.5：本测试专测 2D 逐像素等价性，显式关掉 WebGL 分支。
+    // 图集采样与色域协商由 test/core.test.js 单独断言。
+    CORE, gamut: CORE.gamutPlan(null, { p3:false, cssColor:false, canvasP3:false }),
+    RGB:[0,0,0], rampInfo:null, glReady:false, glyphGL:null, glForcedOff:true, glNote:'',
+    glCv:{ hidden:true }, colorSupport:{ p3:false, cssColor:false, canvasP3:false },
     cache:new Map([[0, u8]]), offCv:null, offCtx:null, offImg:null,
     performance:{ now:()=>1000 },
     document:{ createElement:() => ({ width:0, height:0, getContext:()=>off }) },

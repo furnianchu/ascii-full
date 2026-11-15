@@ -4,7 +4,7 @@
  *
  *   const { render, print } = require('./banner');
  *   render('ASCII FULL', { char: '#', color: true });
- *   print({ title: 'YUEYUE', subtitle: 'offline truecolor ascii video' });
+ *   print({ title: 'YUEYUE', subtitle: 'ascii字符画视频 · 本地真彩转码' });
  *
  * 零依赖、纯 ASCII 输出；TTY 且支持 truecolor 时逐行渐变上色。
  * 内置字体只覆盖 A-Z / 0-9 / 常用符号；中文、∞ 这类请用 --logo-file

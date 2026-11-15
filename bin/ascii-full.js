@@ -47,6 +47,12 @@ const FROM = parseFloat(opt('from', '0')) || 0;
 const TO = opt('to', null) === null ? null : parseFloat(opt('to', '0'));
 const HALF = FLAG('half');                                       // ▀ 上下双色
 const RAMP_MODE = String(opt('ramp', '70'));
+// --ramp-file 指向 scripts/gen-ramp.py 产出的 ramp.json：
+// 字形表像音轨一样单独成路，chunks 格式不动，只是索引按新表重新量化一次。
+const RAMP_FILE_RAW = opt('ramp-file', null);
+const RAMP_FILE = RAMP_FILE_RAW ? path.resolve(String(RAMP_FILE_RAW)) : null;
+// --gamut: auto(读 ffprobe) / srgb / p3 / expand(实验性，显式扩色域)
+const GAMUT = String(opt('gamut', 'auto')).toLowerCase();
 const FORCE = FLAG('force');
 
 // ---- 音频：旁路单轨，格式从第一天就是 tracks[]，方便后期叠加多路 ----
@@ -88,11 +94,53 @@ const PKG = (() => {
 
 const RAMP_10 = " .:-=+*#%@";
 const RAMP_70 = " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$";
-const RAMP = RAMP_MODE === '10' ? RAMP_10 : RAMP_70;
+let RAMP = RAMP_MODE === '10' ? RAMP_10 : RAMP_70;
+let RAMP_SPEC = null;
+if (RAMP_FILE) {
+  if (!fs.existsSync(RAMP_FILE)) {
+    console.error('✗ 找不到 ramp 文件: ' + RAMP_FILE); process.exit(1);
+  }
+  let j;
+  try { j = JSON.parse(fs.readFileSync(RAMP_FILE, 'utf8')); }
+  catch (e) { console.error('✗ ramp 文件不是合法 JSON: ' + e.message); process.exit(1); }
+  const levels = j.levels;
+  if (!Array.isArray(levels) || levels.length < 2 || levels.length > 256) {
+    console.error('✗ ramp.levels 必须是 2~256 项（1 字节索引上限）'); process.exit(1);
+  }
+  const chars = levels.map(l => String((l && l.char) ?? ' '));
+  // 每个字必须是 1 个 UTF-16 单元：非 BMP 字（emoji）会让 ramp[idx] 整体错位。
+  const bad = chars.findIndex(c => c.length !== 1);
+  if (bad >= 0) {
+    console.error(`✗ ramp.levels[${bad}].char 不是一个 UTF-16 单元（可能是 emoji / 非 BMP 字）`);
+    process.exit(1);
+  }
+  if (chars[0] !== ' ') {
+    console.error('✗ ramp.levels[0].char 必须是空格（索引 0 = 不画）'); process.exit(1);
+  }
+  const atlas = j.atlas || null;
+  RAMP = chars.join('');
+  RAMP_SPEC = {
+    version: 2,
+    count: RAMP.length,
+    file: 'ramp.json',
+    sourceFont: j.font || null,
+    method: j.method || 'custom',
+    atlas: atlas ? {
+      file: path.basename(String(atlas.file || 'ramp-atlas.png')),
+      tileW: atlas.tileW | 0, tileH: atlas.tileH | 0,
+      cols: atlas.cols | 0, rows: atlas.rows | 0,
+      count: atlas.count | 0, channel: atlas.channel || 'alpha',
+    } : null,
+    srcAtlasDir: atlas ? path.dirname(RAMP_FILE) : null,
+  };
+}
+if (!['auto', 'srgb', 'p3', 'expand'].includes(GAMUT)) {
+  console.error('✗ --gamut 只接受 auto / srgb / p3 / expand'); process.exit(1);
+}
 
-if (VERSION) { console.log(PKG.name + ' ' + PKG.version); process.exit(0); }
+if (VERSION) { console.log('ascii字符画视频 ' + PKG.version); process.exit(0); }
 if (HELP) {
-  console.log(`${PKG.name} ${PKG.version} — 本地全帧率真彩字符画转码器
+  console.log(`ascii字符画视频 ${PKG.version} — 本地全帧率真彩字符画转码器
 
 用法:
   ascii-full --src VIDEO [--out DIR] [选项]
@@ -106,7 +154,7 @@ if (HELP) {
   --grid N         字符行数，默认 60；列数按源片比例自动算（2.35:1 → 282×60）
   --cols N         直接指定字符列数；单独给时按比例自动反算行数
                    例 4K 16:9：--cols 426 → 426×120（2× 密度）
-                               --cols 852 → 852×240（4× 密度 = 16 字符/采样点）
+                               --cols 852 → 852×240（4× 密度，字符数 16×）
   --fps N          帧率，默认取源片原生帧率
                    超过源片时默认只复制帧（不增加信息）
   --interp         配合 --fps 做 minterpolate 运动补偿插帧（实验性）
@@ -114,7 +162,17 @@ if (HELP) {
   --from S         从第 S 秒开始
   --to S           到第 S 秒结束（不写 = 全片）
   --chunk N        每个 gzip 块装几帧，默认 60
-  --ramp 10|70     灰度级数，默认 70
+  --ramp 10|70     内置灰度级数，默认 70
+  --ramp-file F    实验性：加载自定义字形表 ramp.json（2~256 级，按覆盖率重新量化）
+                    由 scripts/gen-ramp.py 生成；同时需要 ramp-atlas.png
+                    表与图集必须与产物放在同一目录，换表必须重转（索引语义变了）
+                    字形图集走 WebGL 一次 draw call，绕开逐格 fillText
+                    出问题用 ?nogl=1 兜底，或删产物、不带本参数重转
+  --gamut MODE     色域声明，默认 auto：
+                    auto   读 ffprobe 的 color_primaries（BT.2020/P3 → p3，其余 → srgb）
+                    srgb   强制按 sRGB 呈现
+                    p3     声明数据为 Display P3（屏不支持时线性矩阵降级到 sRGB）
+                    expand 实验性：数值仍是 sRGB，但请求在 P3 屏按 P3 呈现（更艳）
   --half           用 ▀ 上下各带一色，垂直分辨率翻倍（体积约 1.75×）
   --force          产物已存在时清空重跑（清 chunks/ 与 meta.json，及 meta 里登记的音轨）
 
@@ -150,7 +208,7 @@ if (HELP) {
 
 跑完:
   ascii-full-serve <输出目录>        # 或 cd <目录> && python3 -m http.server 8080
-  浏览器打开 http://localhost:8080/player.html`);
+  浏览器打开 http://127.0.0.1:8080/   （根路径直接进播放器）`);
   process.exit(0);
 }
 
@@ -170,6 +228,20 @@ for (const [label, bin] of [['ffmpeg', FFMPEG], ['ffprobe', FFPROBE]]) {
 }
 
 const metaPath = path.join(OUT, 'meta.json');
+// 用户常把 ramp.json / 图集直接解压进产物目录，再拿它当 --ramp-file 重转。
+// --force 会清掉 OUT 里的旧旁路文件，等于把源文件也删了（且同路径 copyFileSync 会失败）。
+// 这种情况先读进内存，清理后从内存写回。
+let rampSelfCopy = null;
+if (FORCE && RAMP_FILE && path.dirname(RAMP_FILE) === OUT && fs.existsSync(RAMP_FILE)) {
+  const atlasName = RAMP_SPEC && RAMP_SPEC.atlas && RAMP_SPEC.atlas.file
+    ? path.basename(String(RAMP_SPEC.atlas.file)) : 'ramp-atlas.png';
+  const atlasPath = path.join(path.dirname(RAMP_FILE), atlasName);
+  rampSelfCopy = {
+    json: fs.readFileSync(RAMP_FILE),
+    atlasName: atlasName,
+    atlas: fs.existsSync(atlasPath) ? fs.readFileSync(atlasPath) : null,
+  };
+}
 // 重跑画面时，attach-audio --file 后期挂的 BGM/解说要原样继承下来，
 // 不能因为一次 --force 就让用户重新挂一遍。
 let keptAudioTracks = [];
@@ -193,13 +265,15 @@ if (FORCE && fs.existsSync(OUT)) {
     if (/^audio\/[A-Za-z0-9._-]+$/.test(rel)) fs.rmSync(path.join(OUT, rel), { force: true });
   }
   fs.rmSync(metaPath, { force: true });
+  // 换表重转时旧 ramp 文件不能留：播放器会按新 meta.rampSpec 去取，名字虽同但内容得同步。
+  for (const f of ['ramp.json', 'ramp-atlas.png']) fs.rmSync(path.join(OUT, f), { force: true });
 }
 fs.mkdirSync(path.join(OUT, 'chunks'), { recursive: true });
 
 // ---------- 探测源片 ----------
 const probe = spawnSync(FFPROBE, [
   '-v', 'error', '-select_streams', 'v:0',
-  '-show_entries', 'stream=width,height,r_frame_rate,avg_frame_rate,nb_frames,duration,codec_name',
+  '-show_entries', 'stream=width,height,r_frame_rate,avg_frame_rate,nb_frames,duration,codec_name,color_primaries,color_transfer,color_space,color_range',
   '-show_entries', 'format=duration', '-of', 'json', SRC,
 ], { encoding: 'utf8' });
 if (probe.status !== 0) { console.error('✗ ffprobe 失败: ' + probe.stderr); process.exit(1); }
@@ -209,6 +283,25 @@ const srcW = st.width, srcH = st.height;
 const dur = parseFloat(st.duration || P.format.duration || '0');
 function parseFps(s) { const m = /^(\d+)\/(\d+)$/.exec(s || ''); return m ? (+m[1] / +m[2]) : parseFloat(s); }
 const srcFps = parseFps(st.r_frame_rate) || parseFps(st.avg_frame_rate) || 24;
+
+// 色域只做「声明 + 播放端协商」，不重编码那 3 个颜色字节 —— 和音轨一样单独成路。
+// 大多数 SDR mp4 是 BT.709 / 未标注：auto 会如实写 srgb，不会凭空把颜色变艳。
+const prim = String(st.color_primaries || '').toLowerCase();
+const trc  = String(st.color_transfer || '').toLowerCase();
+const spc  = String(st.color_space || '').toLowerCase();
+const rng  = String(st.color_range || '').toLowerCase();
+const wide = /bt2020|smpte432|dci|p3/.test(prim + ' ' + spc);
+let declaredGamut = 'srgb', gamutSource = 'probe';
+if (GAMUT === 'expand')      { declaredGamut = 'p3';   gamutSource = 'expand'; }
+else if (GAMUT === 'p3')     { declaredGamut = 'p3';   gamutSource = 'flag'; }
+else if (GAMUT === 'srgb')   { declaredGamut = 'srgb'; gamutSource = 'flag'; }
+else                         { declaredGamut = wide ? 'p3' : 'srgb'; }
+const COLOR_INFO = {
+  gamut: declaredGamut, source: gamutSource,
+  primaries: prim || 'unspecified', transfer: trc || 'unspecified',
+  matrix: spc || 'unspecified', range: rng || 'unspecified',
+  note: '声明式：chunks 里仍是 8bit/通道数值，播放端按屏能力协商解释或降级',
+};
 const FPS = FPS_OVERRIDE ? parseFloat(FPS_OVERRIDE) : srcFps;
 if (!(FPS > 0 && FPS <= 120)) { console.error('✗ 帧率异常: ' + FPS); process.exit(1); }
 
@@ -254,7 +347,7 @@ const { createLogger } = require('./logger');
 if (!NO_LOGO) {
   printBanner({
     title: LOGO, char: LOGO_CHAR, file: LOGO_FILE,
-    subtitle: `${PKG.name} ${PKG.version} · offline truecolor ascii transcoder`,
+    subtitle: `ascii字符画视频 ${PKG.version} · 本地全帧率真彩转码`,
   });
 }
 const log = createLogger({ name: 'ascii-full', dir: OUT, file: LOG_FILE, quiet: QUIET, level: LOG_LEVEL });
@@ -269,6 +362,8 @@ log.startup([
   ['音轨', !AUDIO ? '未抽取（--audio 开启；老产物可用 attach-audio 补）'
             : !srcAudio ? '⚠ 源片无 a:0，产物将静音'
             : `${AUDIO_CODEC} ${AUDIO_BITRATE}  ${srcAudio.codec} ${srcAudio.sampleRate}Hz ${srcAudio.channels}ch  → audio/${AUDIO_ID}.${AUDIO_SPEC[AUDIO_CODEC].ext}`],
+  ['色域', `${declaredGamut.toUpperCase()}  源标记 ${prim || '未标注'}  ·  ${gamutSource === 'expand' ? '实验性扩色域' : '声明式协商（不改颜色字节）'}`],
+  ['字形', RAMP_SPEC ? `自定义 ${RAMP.length} 级（${path.basename(RAMP_FILE)} + 图集 WebGL）` : `内置 ${RAMP.length} 级（2D fillText）`],
   ['ffmpeg', FFMPEG],
 ]);
 log.stage('开始解码');
@@ -417,6 +512,13 @@ ff.on('close', code => {
     frames, chunks: chunkNo, from: t0, to: t1,
     generatedAt: new Date().toISOString(),
   };
+  // 两路旁路：字形表与色域声明。都不进 chunks，老播放器不认识就走内置 70 级 / sRGB。
+  if (RAMP_SPEC) {
+    const clean = Object.assign({}, RAMP_SPEC);
+    delete clean.srcAtlasDir;                 // 本机绝对路径不写进产物
+    meta.rampSpec = clean;
+  }
+  meta.color = COLOR_INFO;
   // 音频是 tracks[] 而不是单个文件：第一条为 master 主时钟，其余为 overlay，
   // 每条自带 gain / offset / role。后期叠 BGM、解说、多语种只往数组追加即可。
   // --force 重转画面时，source:'file' 的外部音轨原样继承，不用重新挂。
@@ -427,6 +529,25 @@ ff.on('close', code => {
     meta.audio = { version: 1, master: 0, tracks: allTracks };
   }
   fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+
+  // 字形表 + 图集是产物目录里的两个静态小文件，播放端直接取，不作运行时依赖。
+  let rampCopied = false;
+  if (RAMP_SPEC) {
+    if (rampSelfCopy) {
+      fs.writeFileSync(path.join(OUT, 'ramp.json'), rampSelfCopy.json);
+      if (rampSelfCopy.atlas) fs.writeFileSync(path.join(OUT, rampSelfCopy.atlasName), rampSelfCopy.atlas);
+      else log.warn('找不到字形图集 ' + rampSelfCopy.atlasName + ' —— 播放器会回退 2D 字符路径');
+    } else {
+      fs.copyFileSync(RAMP_FILE, path.join(OUT, 'ramp.json'));
+      const a = RAMP_SPEC.atlas;
+      if (a && a.file) {
+        const src = path.join(RAMP_SPEC.srcAtlasDir || path.dirname(RAMP_FILE), a.file);
+        if (fs.existsSync(src)) fs.copyFileSync(src, path.join(OUT, a.file));
+        else log.warn('找不到字形图集 ' + src + ' —— 播放器会回退 2D 字符路径');
+      }
+    }
+    rampCopied = true;
+  }
 
   // 播放器随产物一起走：服务起在 OUT，而 player.html 在仓库的 web/ 下，
   // 手动 cp 很容易漏（漏了就是 /player.html 404）。这里每次转码都同步一份。
@@ -452,6 +573,8 @@ ff.on('close', code => {
                     (audioTrack ? `  新抽 ${audioTrack.codec} ${audioTrack.sampleRate}Hz  ${(fs.statSync(path.join(OUT, audioTrack.file)).size / 1024).toFixed(0)} KB` : '  ⚠ 本次未抽到主音轨') +
                     (keptAudioTracks.length ? `  · 继承 ${keptAudioTracks.length} 条外部叠加轨` : '')
                   : '未抽取（--audio 开启；可用 attach-audio 补而不重转）'}`,
+    `字形表    : ${RAMP_SPEC ? `自定义 ${RAMP.length} 级 · ramp.json + 图集 ${rampCopied ? '已复制 ✓' : '⚠ 缺失'} · WebGL 一次 draw call` : `内置 ${RAMP.length} 级 · 2D 字符路径`}`,
+    `色域      : ${declaredGamut.toUpperCase()}（${gamutSource === 'expand' ? '实验性扩色域' : gamutSource === 'flag' ? '手动声明' : '按源片标记自动'}）· ${prim || '源未标注'} · 声明式，颜色字节未改`,
     `播放器    : ${playerCopied ? '已自动放入输出目录 ✓' : '⚠ 仓库 web/player.html 缺失，需手动复制一份'}`,
   ]);
   console.log('');

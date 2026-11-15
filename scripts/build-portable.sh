@@ -66,7 +66,7 @@ EOF
 fi
 
 cat > "$OUT/怎么用.txt" <<'EOF'
-ascii-full · 免安装终端版
+ascii字符画视频 · 免安装终端版
 ========================
 
 不需要装 Node，也不需要装 ffmpeg —— 都在这个文件夹里了。
@@ -98,10 +98,10 @@ ascii-full · 免安装终端版
     macOS/Linux : ./term.sh "输出目录"
 
 【想要图形界面】
-  去 Release 下载 ascii-full-desktop-* 安装包，选文件点一下就行。
+  去发布页下载 ascii-full-desktop-* 安装包，选文件点一下就行。
 
 日志默认落在「输出目录/ascii-full.log」，出错时把这份文件贴出来最好排查。
 EOF
 
-echo "✓ portable 组装完成: $OUT"
+echo "✓ 免安装包组装完成: $OUT"
 find "$OUT" -maxdepth 2 -type f | sort

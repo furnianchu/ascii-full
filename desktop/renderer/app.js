@@ -41,6 +41,8 @@ function collect() {
     fps: $('#fps').value.trim(),
     chunk: $('#chunk').value || 60,
     ramp: $('#ramp').value,
+    rampFile: $('#rampFile').value.trim(),
+    gamut: $('#gamut').value,
     from: $('#from').value.trim(),
     to: $('#to').value.trim(),
     half: $('#half').checked,

@@ -91,7 +91,7 @@ function fixedDomain() {
 }
 
 if (!FLAG('no-logo')) {
-  printBanner({ title: LOGO, subtitle: `ascii-full-tunnel · ${PROVIDER} · port ${PORT}` });
+  printBanner({ title: LOGO, subtitle: `ascii字符画视频 · 临时域名 · ${PROVIDER} · 端口 ${PORT}` });
 }
 
 if (HOSTNAME) fixedDomain();

@@ -123,7 +123,7 @@ if (!fs.existsSync(ROOT)) {
 if (!NO_LOGO) {
   printBanner({
     title: LOGO, char: LOGO_CHAR, file: LOGO_FILE,
-    subtitle: 'ascii-full-serve · 一条链接，直接进播放器',
+    subtitle: 'ascii字符画视频 · 一条链接，直接进播放器',
   });
 }
 const log = createLogger({ name: 'ascii-full-serve', dir: ROOT });

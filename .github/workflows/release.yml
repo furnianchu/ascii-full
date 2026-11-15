@@ -1,13 +1,13 @@
 # 打一个 tag 就出一整套 Release，不需要本地装 Electron / ffmpeg / Node。
 #
-#   git tag v1.4.0 && git push origin v1.4.0
+#   git tag v1.5.0 && git push origin v1.5.0
 #
 # 产物：
 #   ascii-full-*-win-x64.exe / -mac-*.dmg / -linux-*.AppImage   桌面图形版
 #   ascii-full-*-portable-<平台>.zip|.tar.gz                    免安装终端版（内置 Node + ffmpeg）
 #   ascii-full-*-standalone.html                                零安装单文件播放器
 #   SHA256SUMS.txt
-name: release
+name: 发布
 
 on:
   push:
@@ -36,17 +36,17 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install desktop deps
+      - name: 安装桌面版依赖
         working-directory: desktop
         run: npm install --no-audit --no-fund
 
-      - name: Build desktop app
+      - name: 构建桌面安装包
         working-directory: desktop
         run: npm run build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Collect installers
+      - name: 收集安装包
         shell: bash
         run: |
           mkdir -p artifacts
@@ -86,10 +86,10 @@ jobs:
           node-version: '22'
 
       # 只是借 npm 拿到对应平台的静态 ffmpeg/ffprobe 二进制，运行时零依赖不变
-      - name: Fetch bundled ffmpeg
+      - name: 取内置 ffmpeg
         run: npm install --no-save --no-audit --no-fund ffmpeg-static ffprobe-static
 
-      - name: Assemble portable bundle
+      - name: 组装免安装包
         shell: bash
         run: |
           VER="${GITHUB_REF_NAME#v}"
@@ -132,7 +132,7 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Add standalone player and checksums
+      - name: 加入独立播放器与校验和
         run: |
           VER="${GITHUB_REF_NAME#v}"
           cp web/standalone.html "dist/ascii-full-${VER}-standalone.html"
@@ -140,7 +140,7 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           ls -lh
 
-      - name: Publish release
+      - name: 发布
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

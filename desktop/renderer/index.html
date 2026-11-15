@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ascii-full · 真彩字符画工作台</title>
+<title>ascii字符画视频 · 真彩字符画工作台</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header>
   <div>
-    <h1>ascii-full</h1>
+    <h1>ascii字符画视频</h1>
     <p>把视频翻译成本地可播的真彩字符画 · 全程离线</p>
   </div>
   <div id="env" class="env">正在读取环境…</div>
@@ -37,6 +37,10 @@
       <div class="field"><label>每块帧数</label><input id="chunk" type="number" value="60" min="1"></div>
       <div class="field"><label>灰度级数</label>
         <select id="ramp"><option value="70">70 级（默认）</option><option value="10">10 级</option></select>
+      </div>
+      <div class="field"><label>自定义字形表 ramp.json（留空 = 内置）</label><input id="rampFile" type="text" placeholder="/path/to/ramp.json"></div>
+      <div class="field"><label>色域声明</label>
+        <select id="gamut"><option value="auto">auto · 按源片标记</option><option value="srgb">sRGB</option><option value="p3">Display P3</option><option value="expand">expand · 实验性扩色域</option></select>
       </div>
       <div class="field"><label>从第几秒</label><input id="from" type="text" placeholder="0"></div>
       <div class="field"><label>到第几秒</label><input id="to" type="text" placeholder="留空 = 全片"></div>

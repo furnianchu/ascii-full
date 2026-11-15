@@ -1,4 +1,4 @@
-name: ci
+name: 自检
 
 on:
   push:
@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      - name: Check ffmpeg
+      - name: 检查 ffmpeg
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1; then
             sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -29,7 +29,7 @@ jobs:
           ffmpeg -version | head -1
           ffprobe -version | head -1
 
-      - name: Static checks (desktop / standalone / banner)
+      - name: 静态检查（桌面版 / 单文件 / 启动大字）
         run: |
           node --check desktop/main.js
           node --check desktop/preload.js
@@ -46,10 +46,10 @@ jobs:
           node bin/banner.js "ASCII FULL" > /dev/null
           bash -n scripts/build-portable.sh
 
-      - name: Smoke test
+      - name: 端到端自检
         run: npm test
 
-      - name: CLI smoke
+      - name: 命令行自检
         run: |
           node bin/ascii-full.js --version
           node bin/ascii-full.js --help | head -8

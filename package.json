@@ -1,7 +1,8 @@
 {
   "name": "ascii-full",
-  "version": "1.4.0",
-  "description": "Offline full-fps 24-bit truecolor ASCII video transcoder with a separate multitrack audio lane — CLI, terminal, browser, desktop GUI, portable bundles and one-link HTTPS tunnels (ffmpeg + Node, zero runtime deps)",
+  "displayName": "ascii字符画视频",
+  "version": "1.5.0",
+  "description": "ascii字符画视频：把视频离线预烘焙成 gzip 分块的每字符真彩帧数据，画面/声音/字形表/色域各自单独成路，可在命令行、终端、浏览器、桌面图形版、零安装单文件里播放，也能用一条链接或临时域名分享（ffmpeg + Node，零运行时依赖）",
   "bin": {
     "ascii-full": "bin/ascii-full.js",
     "ascii-full-term": "bin/ascii-full-term.js",
@@ -48,7 +49,12 @@
     "audio",
     "opus",
     "multitrack",
-    "audio-sync"
+    "audio-sync",
+    "glyph-atlas",
+    "webgl",
+    "display-p3",
+    "color-gamut",
+    "cjk"
   ],
   "license": "MIT",
   "private": false

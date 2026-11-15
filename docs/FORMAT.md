@@ -6,6 +6,8 @@
 ascii-out/
 ├── meta.json          # 描述文件（UTF-8 JSON）
 ├── player.html        # 转码时自动复制进来的浏览器播放器
+├── ramp.json          # 可选（v1.5）：自定义字形表，--ramp-file 时生成
+├── ramp-atlas.png     # 可选（v1.5）：预烘焙字形图集，WebGL 按索引采样
 ├── chunks/            # 画面：每块 N 帧的 gzip 裸字节
 │   ├── c_00000.gz
 │   └── ...
@@ -21,7 +23,7 @@ ascii-out/
 
 只要按下面规则读，就能用任何语言写自己的播放器。
 
-## meta.json
+## 描述文件 meta.json
 
 | 字段 | 含义 |
 |---|---|
@@ -43,6 +45,24 @@ ascii-out/
 | `generatedAt` | ISO 时间 |
 | `audio` | 可选。`{ version:1, master:0, tracks:[…] }`；没有这个字段 = 老产物 / 静音 |
 | `audioUpdatedAt` | 用 `attach-audio` 改过音轨后写入，`generatedAt` 不变 |
+| `rampSpec` | 可选（v1.5）。自定义字形表的旁路描述；没有 = 用 `ramp` 内置字符串 |
+| `color` | 可选（v1.5）。色域声明；没有 = 按 sRGB 解释，零回归 |
+
+### 两个 v1.5 旁路字段
+
+`meta.rampSpec` 与 `meta.color` 都是**产物目录里的旁路描述**，不进 `chunks/`、
+不改变 `4B/cell` 布局、`frameBytes` 逐字节不变。老播放器不认识这两个字段时，
+分别降级为内置 70 级 2D 字形与 sRGB，零回归。
+
+- **`meta.rampSpec`**：可选。自定义字形表的级数、字体、生成方式、图集布局
+  （`atlas.file / tileW / tileH / cols / rows / count`）。没有它，读端用
+  `meta.ramp` 字符串按 2D 路径画；有它且 WebGL 可用，走图集一次 draw call。
+  索引按 `len(ramp)` 重新量化，所以换表要重转一次。详见 [RAMP.md](RAMP.md)。
+- **`meta.color`**：可选但 v1.5 起转码器总会写。`{ gamut: 'srgb'|'p3',
+  source: 'probe'|'flag'|'expand', primaries, transfer, matrix, range }`。
+  它是**声明**而非转换：chunks 里仍是三个 0–255 字节，播放端按屏幕能力决定
+  按 P3 呈现、线性矩阵压回 sRGB，还是 identity。没有 `meta.color` 的老产物
+  一律按 sRGB 解释。详见 [COLOR.md](COLOR.md)。
 
 ### 网格宽度怎么来的
 
@@ -55,7 +75,7 @@ W = round(2 * srcW / srcH * H)
 
 例如 3388×1440（2.353:1）、`--grid 60` → `W = 282`。这样不会把宽银幕压扁。
 
-## chunks/*.gz
+## 帧数据 chunks/*.gz
 
 每块文件名 `c_%05d.gz`，内容是 **N 帧裸字节直接拼接**，N 通常等于
 `chunkFrames`，最后一块可能更少：
@@ -68,7 +88,7 @@ gunzip(文件).length === N * frameBytes
 帧内按**行优先**排列，`cell(y, x)` 的偏移是
 `frameBase + (y * W + x) * bytesPerCell`。
 
-### plain（默认，4 B/cell）
+### 普通模式（默认，每格 4 字节）
 
 | 偏移 | 内容 |
 |---|---|
@@ -77,7 +97,7 @@ gunzip(文件).length === N * frameBytes
 
 渲染：`ramp[idx]` 作为字符，RGB 作为前景色。
 
-### half（`--half`，7 B/cell）
+### 半块模式（`--half`，每格 7 字节）
 
 | 偏移 | 内容 |
 |---|---|
@@ -97,7 +117,7 @@ idx = clamp(floor(lum / 256 * len(ramp)), 0, len(ramp)-1)
 默认 ramp 70 级；`--ramp 10` 切到 `" .:-=+*#%@"`。字符只承载亮度，
 颜色完全由独立 RGB 承担 —— 这是「真彩字符画」和普通 ASCII 灰度的区别。
 
-## 关于 gzip
+## 关于 gzip 压缩
 
 - 用 `zlib.gzipSync(body, { level: 6 })` 按块压缩，**不做帧间差分、不量化、不丢帧**。
 - 服务端返回 `.gz` 时**不要**加 `Content-Encoding: gzip`：文件是数据不是传输编码，

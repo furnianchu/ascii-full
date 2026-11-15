@@ -116,6 +116,31 @@ Ctrl-C 会恢复光标并重置颜色。
 防误覆盖的设计。确认重跑就加 `--force`，或换一个 `--out` 目录。
 中断后重跑用同一条命令即可，`--force` 会从第 0 帧重新开始（不做断点续传）。
 
+## 字符模式一片黑，色块 / `?nogl=1` 却正常
+
+这是 **v1.5 自定义字形表的索引与表错配**，不是 chunks 坏了、也不是 404。
+先用 `?nogl=1` 二分：能出笔画 → 数据、颜色、上屏全好，只有字形图集那一路错；
+色块正常 → 它根本不读索引，正好佐证。
+
+根因通常是：转码时用了 `--ramp-file A/ramp.json`（索引按 200 级重新量化），
+播放时目录里却是另一份 `ramp.json` / `ramp-atlas.png`，或者后来被塞进了
+「内置 70 级产物」。同一个下标指向了别的字，暗部全落到空格，整帧就黑。
+
+最干净的解法（实测有效）：
+
+```sh
+cd ~ && rm -rf ./ascii-out
+ascii-full --src V.mp4 --out ./ascii-out --grid 60 --audio --force
+ascii-full-serve ./ascii-out 8080 --lan --open
+```
+
+**不带 `--ramp-file`**，目录里也别放 `ramp.json` / `ramp-atlas.png`，
+回到内置 70 级，索引语义零歧义。chunks 已是自定义级数时不能只回退旧播放器
+（旧表解新索引会越界），必须重转。
+
+以后要用自定义表：`--ramp-file` 指向的那份 `ramp.json` 与 `ramp-atlas.png`
+必须在转完立刻放进 `--out`，并核 `meta.rampSpec.count` 与表一致。
+换表 = 重转一次。详见 [RAMP.md](RAMP.md)。
 
 ## 感觉帧率很低 / 画面一顿一顿
 

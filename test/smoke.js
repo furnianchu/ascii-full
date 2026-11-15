@@ -19,6 +19,7 @@ const ROOT = path.resolve(__dirname, '..');
 const BIN = path.join(ROOT, 'bin', 'ascii-full.js');
 const { FONT, render, hasUnsupported } = require(path.join(ROOT, 'bin', 'banner.js'));
 const { check: checkRender } = require(path.join(ROOT, 'test', 'render.test.js'));
+const { check: checkCore } = require(path.join(ROOT, 'test', 'core.test.js'));
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ascii-full-test-'));
 let passed = 0;
 
@@ -47,6 +48,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function main() {
   console.log('— 渲染等价性（无 ffmpeg 依赖）—');
   checkRender(ok);
+  console.log('— v1.5 渲染核心：色域 / ramp / WebGL 图集（无 DOM 依赖）—');
+  checkCore(ok);
 
   // 0-A. 桌面端 / CLI 参数同步（静态，无 ffmpeg 也能跑）
   // 教训：CLI 加了 --audio 等开关，GUI 曾漏同步半个版本。这里把「必须一起改」
@@ -74,7 +77,7 @@ async function main() {
   ok(dm.includes("args.push(cols ? '--cols' : '--grid'"), 'cols 与 grid 互斥传参（超采样不压扁）');
   ok(da.includes('syncAudio()'), '音频控件有启用联动');
 
-  console.log('ascii-full smoke test\n');
+  console.log('ascii字符画视频 · 自检\n');
 
   // 0. 依赖
   const ff = run('ffmpeg', ['-version']);
@@ -332,6 +335,104 @@ async function main() {
   ok(fs.existsSync(path.join(ROOT, 'docs', 'AUDIO.md')) &&
      fs.readFileSync(path.join(ROOT, 'docs', 'AUDIO.md'), 'utf8').includes('多轨'),
     'docs/AUDIO.md 存在且讲了多轨叠加');
+
+  // 4g. v1.5：自定义字形表 / 色域协商 / WebGL 图集 -------------------------
+  const coreSrc = fs.readFileSync(path.join(ROOT, 'web', '_render-core.js'), 'utf8');
+  const grab = s => { const m = /<script id="render-core">([\s\S]*?)<\/script>/.exec(s); return m ? m[1] : ''; };
+  const c1 = grab(pl), c2 = grab(sa);
+  ok(c1.includes('AsciiFullCore') && c2.includes('AsciiFullCore'), '两个播放器都内联了渲染核心');
+  ok(c1.includes(coreSrc) && c2.includes(coreSrc),
+    '内联核心与 web/_render-core.js 逐字一致（不是各写一份）');
+  ok(pl.includes('GlyphGL') && sa.includes('GlyphGL'), '两个播放器都接 WebGL 字形图集路径');
+  ok(pl.includes('gamutPlan') && sa.includes('gamutPlan'), '两个播放器都做色域协商');
+  ok(pl.includes("get('nogl')") && sa.includes("get('nogl')"), '两个播放器都有 ?nogl=1 回退开关');
+  const cli = fs.readFileSync(BIN, 'utf8');
+  ok(cli.includes("--ramp-file") && cli.includes('--gamut'), '转码器有 --ramp-file / --gamut');
+  ok(cli.includes('color_primaries') && cli.includes('COLOR_INFO'), '转码器探测源片色域标记并写 meta.color');
+  ok(run(process.execPath, [BIN, '--help']).stdout.includes('--ramp-file'), '--help 列出自定义 ramp 用法');
+  for (const flag of ["'--ramp-file'", "'--gamut'"]) ok(dm.includes(flag), `desktop/main.js 透传 ${flag}`);
+  for (const key of ['rampFile:', 'gamut:']) ok(da.includes(key), `app.js collect() 收集 ${key}`);
+  for (const id of ['id="rampFile"', 'id="gamut"']) ok(dh.includes(id), `界面有 ${id} 控件`);
+  ok(fs.existsSync(path.join(ROOT, 'scripts', 'gen-ramp.py')) &&
+     fs.existsSync(path.join(ROOT, 'docs', 'RAMP.md')) &&
+     fs.existsSync(path.join(ROOT, 'docs', 'COLOR.md')), 'ramp 生成脚本与两份文档齐备');
+  const fm5 = fs.readFileSync(path.join(ROOT, 'docs', 'FORMAT.md'), 'utf8');
+  ok(fm5.includes('rampSpec') && fm5.includes('meta.color'), 'FORMAT.md 写明两个新旁路字段');
+
+  const py = run('python3', ['-c', 'import fontTools, PIL']);
+  if (py.status !== 0) {
+    console.log('  ⚠ 跳过 gen-ramp 实跑（缺 fonttools / pillow），静态断言仍全部执行');
+  } else {
+    const rampDir = path.join(TMP, 'ramp');
+    const gr = run('python3', [path.join(ROOT, 'scripts', 'gen-ramp.py'),
+      '--levels', '24', '--limit', '400', '--tile', '16', '--out', rampDir]);
+    ok(gr.status === 0, 'gen-ramp.py 实跑成功' + (gr.status !== 0 ? '\n' + gr.stderr : ''));
+    const rj = JSON.parse(fs.readFileSync(path.join(rampDir, 'ramp.json'), 'utf8'));
+    ok(rj.levels.length === 24 && rj.atlas.cols * rj.atlas.rows >= 24,
+      'ramp.json: 24 级且图集网格放得下');
+    ok(rj.levels[0].char === ' ', 'ramp.json: 0 级是空格（索引 0 = 不画）');
+    ok(rj.levels.every(l => l.char.length === 1), 'ramp.json: 每个字都是 1 个 UTF-16 单元（无 emoji）');
+    ok(fs.statSync(path.join(rampDir, 'ramp-atlas.png')).size > 0, 'ramp-atlas.png 已生成且非空');
+
+    const out5 = path.join(TMP, 'out-v15');
+    const r5 = run(process.execPath, [BIN, '--src', sample, '--out', out5,
+      '--grid', '20', '--to', '0.3', '--chunk', '12', '--force',
+      '--ramp-file', path.join(rampDir, 'ramp.json'), '--gamut', 'expand']);
+    ok(r5.status === 0, '--ramp-file + --gamut 转码退出码 0' + (r5.status !== 0 ? '\n' + r5.stderr : ''));
+    const M5 = JSON.parse(fs.readFileSync(path.join(out5, 'meta.json'), 'utf8'));
+    ok(M5.ramp.length === 24 && M5.rampSpec && M5.rampSpec.count === 24,
+      'meta.ramp 换成 24 级自定义表，rampSpec.count 一致');
+    ok(M5.rampSpec.atlas.file === 'ramp-atlas.png' && M5.rampSpec.atlas.cols * M5.rampSpec.atlas.rows >= 24,
+      'meta.rampSpec.atlas 图集布局可用');
+    ok(!('srcAtlasDir' in M5.rampSpec), 'meta 里不泄漏本机绝对路径');
+    ok(M5.color && M5.color.gamut === 'p3' && M5.color.source === 'expand', '--gamut expand → p3 声明');
+    ok(fs.existsSync(path.join(out5, 'ramp.json')) && fs.existsSync(path.join(out5, 'ramp-atlas.png')),
+      'ramp.json / ramp-atlas.png 已复制进产物目录');
+    ok(M5.frameBytes === M5.W * M5.H * 4 && M5.bytesPerCell === 4,
+      '换表 + 换色域后 chunks 仍是 4B/cell，格式一字节没动');
+    const c5 = zlib.gunzipSync(fs.readFileSync(path.join(out5, 'chunks', 'c_00000.gz')));
+    let idxMax = 0;
+    for (let i = 0; i < Math.min(M5.chunkFrames, M5.frames); i++) idxMax = Math.max(idxMax, c5[i * M5.frameBytes]);
+    ok(idxMax < 24, `索引按新表重新量化（实测最大 ${idxMax} < 24）`);
+
+    // 用户常把两个旁路文件直接解压进产物目录再当 --ramp-file 用；
+    // --force 不能把源文件自删，也不能同路径 copyFileSync 失败。
+    const selfDir = path.join(TMP, 'out-self');
+    fs.mkdirSync(selfDir, { recursive: true });
+    fs.copyFileSync(path.join(rampDir, 'ramp.json'), path.join(selfDir, 'ramp.json'));
+    fs.copyFileSync(path.join(rampDir, 'ramp-atlas.png'), path.join(selfDir, 'ramp-atlas.png'));
+    const rs = run(process.execPath, [BIN, '--src', sample, '--out', selfDir,
+      '--grid', '20', '--to', '0.2', '--chunk', '12', '--force',
+      '--ramp-file', path.join(selfDir, 'ramp.json')]);
+    ok(rs.status === 0, 'ramp 源文件与 --out 同目录 + --force 不崩' + (rs.status !== 0 ? '\n' + rs.stderr : ''));
+    ok(fs.existsSync(path.join(selfDir, 'ramp.json')) &&
+       fs.existsSync(path.join(selfDir, 'ramp-atlas.png')),
+      '同目录 --force 后两个旁路文件仍在（从内存写回）');
+    const Ms = JSON.parse(fs.readFileSync(path.join(selfDir, 'meta.json'), 'utf8'));
+    ok(Ms.rampSpec && Ms.rampSpec.count === 24, '同目录 --force 后 meta.rampSpec 仍正确');
+
+    const out6 = path.join(TMP, 'out-auto');
+    const r6 = run(process.execPath, [BIN, '--src', sample, '--out', out6,
+      '--grid', '20', '--to', '0.2', '--force']);
+    ok(r6.status === 0, '默认 --gamut auto 转码退出码 0');
+    const M6 = JSON.parse(fs.readFileSync(path.join(out6, 'meta.json'), 'utf8'));
+    ok(M6.color && M6.color.gamut === 'srgb' && M6.color.source === 'probe',
+      'BT.709 / 未标注的 SDR 片 auto 如实写 srgb，不凭空升 P3');
+    ok(!M6.rampSpec && M6.ramp.length === 70, '不给 --ramp-file 时仍走内置 70 级（老产物零回归）');
+
+    // 非法输入必须挡住，不能悄悄产出坏数据
+    const badDir = path.join(TMP, 'bad-ramp');
+    fs.mkdirSync(badDir, { recursive: true });
+    fs.writeFileSync(path.join(badDir, 'ramp.json'), JSON.stringify({
+      levels: [{ char: ' ', coverage: 0 }, { char: '\u{1F600}', coverage: 1 }], atlas: { file: 'ramp-atlas.png' }
+    }));
+    const rb = run(process.execPath, [BIN, '--src', sample, '--out', path.join(TMP, 'out-bad'),
+      '--to', '0.1', '--force', '--ramp-file', path.join(badDir, 'ramp.json')]);
+    ok(rb.status !== 0 && /UTF-16/.test(rb.stderr), '非 BMP 字形（emoji）被拒绝，避免 ramp 索引错位');
+    const rg = run(process.execPath, [BIN, '--src', sample, '--out', path.join(TMP, 'out-bad2'),
+      '--to', '0.1', '--force', '--gamut', 'bogus']);
+    ok(rg.status !== 0 && /--gamut/.test(rg.stderr), '非法 --gamut 值被拒绝');
+  }
 
   // 5. 内置 HTTP 服务
   return (async () => {

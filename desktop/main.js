@@ -45,7 +45,7 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1180, height: 820, minWidth: 900, minHeight: 620,
     backgroundColor: '#08070a',
-    title: 'ascii-full · 真彩字符画工作台',
+    title: 'ascii字符画视频 · 真彩字符画工作台',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false,
@@ -141,7 +141,7 @@ app.on('window-all-closed', () => {
 
 ipcMain.handle('app:info', () => ({
   version: (() => {
-    try { return require('./package.json').version; } catch { return '1.4.0'; }
+    try { return require('./package.json').version; } catch { return '1.5.0'; }
   })(),
   platform: process.platform + '-' + process.arch,
   electron: process.versions.electron,
@@ -204,6 +204,11 @@ ipcMain.handle('run:transcode', (_e, o) => {
   if (o.to !== '' && o.to != null) args.push('--to', String(o.to));
   if (o.half) args.push('--half');
   if (o.force) args.push('--force');
+  // 自定义字形表与色域声明（v1.5）：都是旁路，不进 chunks。
+  const rampFile = String(o.rampFile || '').trim();
+  if (rampFile) args.push('--ramp-file', rampFile);
+  const gamut = String(o.gamut || 'auto').trim();
+  if (gamut && gamut !== 'auto') args.push('--gamut', gamut);
   // 声音单独一路（v1.4）：默认关，勾了才抽；不重转画面也能用 attach-audio 补。
   if (o.audio) {
     args.push('--audio');
@@ -250,7 +255,7 @@ ipcMain.handle('player:open', async (_e, dir) => {
     else {
       playerWin = new BrowserWindow({
         width: 1280, height: 800, backgroundColor: '#060509',
-        title: 'ascii-full · 播放器',
+        title: 'ascii字符画视频 · 播放器',
         webPreferences: { contextIsolation:true, nodeIntegration:false },
       });
       playerWin.loadURL(url);
