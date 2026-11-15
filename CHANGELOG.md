@@ -1,5 +1,32 @@
 # 更新日志
 
+## v1.6.0 — 导出宣传片（数据 → 普通 mp4）
+
+**新增**
+
+- `ascii-full-export` / `bin/export-video.js`：把产物渲染成 H.264 + yuv420p + AAC +
+  faststart + BT.709 标记的常规 mp4，直接传视频网站，观众零门槛
+- 两步流程明确写进文档：`源片 → 字符画数据 → 字符画风格视频`。第 ② 步**不重新取色、
+  不二次转码**，`1B 索引 + 3B RGB` 原样画成像素，相对 chunks 零损失
+- `--from` / `--duration` 按产物帧轴截取，只 gunzip 覆盖到的那几个块，不必铺开全量数据
+- `--mode glyph|block`、`--glyph auto|atlas|font|dither`、`--scale 1~4`（nearest）、
+  `--font`、`--crf`、`--preset`、`--no-audio`
+- 字形图集三级兜底：产物自带 `ramp-atlas.png`（自写零依赖 PNG 解码，取 alpha 墨量）
+  → ffmpeg drawtext 逐字 `textfile` 渲染（绕开特殊字符转义）→ Bayer 覆盖率网点
+- **每条来源先验墨量**，几乎无墨即降级并明确告警 —— 不产出全黑视频（实测四种来源
+  抽帧非黑像素 37.8%~50.0%）
+- 多轨按各自 `gain / offset` 经 `atrim / volume / adelay / amix(normalize=0)` 混成
+  一条 AAC 192k；`--half` 上下双色分支同样支持
+- 中文文档 `docs/EXPORT.md`；README 补「⑥ 导出宣传片」全量参数表与两步流程图
+- 端到端自检验编码、帧数、音频轨、`faststart` 与**抽帧非黑**（不拿 mock 结果当真机验收）
+
+**实话与边界**
+
+- mp4 是快照：不能拖密度、不能切字形/色块、不能单独挂音轨；这些能力只在本地 chunks 里
+- H.264 编码走 CPU，计算卡没有 NVENC 是正常现象
+- `meta.color.gamut=p3` 是声明式旁路，导出统一按 BT.709 标记，不凭空变艳
+- 想做「字符叠字符」套娃，把导出的 mp4 当源片再转一次即可，但会二次采样，只建议几秒
+
 ## v1.5.0 — 字形表与色域，各自单独成路
 
 > 文案修订：界面显示名定为「ascii字符画视频」，README 与全部介绍文档改为中文，

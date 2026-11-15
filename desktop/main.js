@@ -141,7 +141,7 @@ app.on('window-all-closed', () => {
 
 ipcMain.handle('app:info', () => ({
   version: (() => {
-    try { return require('./package.json').version; } catch { return '1.5.0'; }
+    try { return require('./package.json').version; } catch { return '1.6.0'; }
   })(),
   platform: process.platform + '-' + process.arch,
   electron: process.versions.electron,

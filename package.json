@@ -1,14 +1,15 @@
 {
   "name": "ascii-full",
   "displayName": "ascii字符画视频",
-  "version": "1.5.0",
-  "description": "ascii字符画视频：把视频离线预烘焙成 gzip 分块的每字符真彩帧数据，画面/声音/字形表/色域各自单独成路，可在命令行、终端、浏览器、桌面图形版、零安装单文件里播放，也能用一条链接或临时域名分享（ffmpeg + Node，零运行时依赖）",
+  "version": "1.6.0",
+  "description": "ascii字符画视频：把视频离线预烘焙成 gzip 分块的每字符真彩帧数据，画面/声音/字形表/色域各自单独成路，可在命令行、终端、浏览器、桌面图形版、零安装单文件里播放，也能用一条链接或临时域名分享，或一键导出成可直接上传的 H.264/AAC 常规 mp4（ffmpeg + Node，零运行时依赖）",
   "bin": {
     "ascii-full": "bin/ascii-full.js",
     "ascii-full-term": "bin/ascii-full-term.js",
     "ascii-full-serve": "bin/serve.js",
     "ascii-full-tunnel": "bin/tunnel.js",
-    "ascii-full-attach-audio": "bin/attach-audio.js"
+    "ascii-full-attach-audio": "bin/attach-audio.js",
+    "ascii-full-export": "bin/export-video.js"
   },
   "files": [
     "bin/",
@@ -25,6 +26,7 @@
     "serve": "node bin/serve.js",
     "tunnel": "node bin/tunnel.js",
     "attach-audio": "node bin/attach-audio.js",
+    "export-video": "node bin/export-video.js --help",
     "desktop": "npm --prefix desktop start",
     "banner": "node bin/banner.js"
   },
@@ -54,7 +56,10 @@
     "webgl",
     "display-p3",
     "color-gamut",
-    "cjk"
+    "cjk",
+    "mp4-export",
+    "h264",
+    "ascii-video"
   ],
   "license": "MIT",
   "private": false

@@ -482,6 +482,79 @@ async function main() {
     ok(buf.includes('38;2;'), '终端播放器输出 truecolor 转义序列');
     ok(buf.includes('源片'), '终端播放器读到 meta.json');
 
+    // 7. v1.6 导出宣传片：真跑 ffmpeg 编码 + 真抽一帧验非黑
+    // 教训：mock 亮过不等于真亮。这里不看 draw call，直接验输出像素。
+    console.log('— v1.6 导出宣传片（端到端）—');
+    const EXP = path.join(ROOT, 'bin', 'export-video.js');
+    const runBuf = (cmd, args) => spawnSync(cmd, args, { maxBuffer: 64 * 1024 * 1024 });
+    const eh = run(process.execPath, [EXP, '--help']);
+    ok(eh.status === 0 && eh.stdout.includes('导出宣传片'), 'export-video --help 输出中文帮助');
+    const rootPkg16 = JSON.parse(rd('package.json'));
+    ok(rootPkg16.bin['ascii-full-export'] === 'bin/export-video.js',
+      'package.json 注册 ascii-full-export 命令');
+    ok(fs.existsSync(path.join(ROOT, 'docs', 'EXPORT.md')) &&
+       rd('README.md').includes('导出宣传视频'), '中文导出文档与 README 章节齐全');
+
+    const expFile = path.join(TMP, 'export.mp4');
+    const rExp = run(process.execPath, [EXP, '--out', out, '--to', expFile,
+      '--duration', '0.5', '--mode', 'glyph', '--no-audio', '--quiet']);
+    ok(rExp.status === 0, '导出退出码 0' + (rExp.status !== 0 ? '\n' + rExp.stderr : ''));
+    ok(fs.existsSync(expFile) && fs.statSync(expFile).size > 1000, '导出 mp4 落盘且非空');
+
+    const pj = JSON.parse(run('ffprobe', ['-v', 'error', '-show_entries',
+      'stream=codec_name,codec_type,width,height,pix_fmt,nb_frames',
+      '-of', 'json', expFile]).stdout);
+    const vs = (pj.streams || []).find(s => s.codec_type === 'video') || {};
+    ok(vs.codec_name === 'h264' && vs.pix_fmt === 'yuv420p',
+      '导出为 H.264 / yuv420p（视频网站通吃）');
+    ok(vs.width === M.W * 8 && vs.height === M.H * 8 * 2,
+      `输出尺寸按 cell 8×16 铺开 ${vs.width}×${vs.height}`);
+    ok(parseInt(vs.nb_frames, 10) === 12, '导出帧数与 --duration 对齐（12 帧 @24fps）');
+    ok(!(pj.streams || []).some(s => s.codec_type === 'audio'), '--no-audio 导出无音轨');
+
+    const mp4 = fs.readFileSync(expFile);
+    const moov = mp4.indexOf(Buffer.from('moov')), mdat = mp4.indexOf(Buffer.from('mdat'));
+    ok(moov >= 0 && mdat >= 0 && moov < mdat, 'faststart：moov 在 mdat 之前（网页边下边播）');
+
+    // 关键：真抽一帧看有没有东西，而不是只看编码成功
+    const oneFrame = runBuf('ffmpeg', ['-v', 'error', '-i', expFile,
+      '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray', '-']);
+    ok(oneFrame.status === 0 && oneFrame.stdout.length === vs.width * vs.height,
+      '从导出 mp4 真抽出一帧灰度图');
+    let lit = 0;
+    for (const v of oneFrame.stdout) if (v > 8) lit++;
+    ok(lit / oneFrame.stdout.length > 0.02,
+      `抽帧非黑像素 ${(100 * lit / oneFrame.stdout.length).toFixed(1)}%（不产出全黑视频）`);
+
+    // 强制网点降级也必须非黑
+    const dithFile = path.join(TMP, 'export-dither.mp4');
+    const rD = run(process.execPath, [EXP, '--out', out, '--to', dithFile,
+      '--duration', '0.3', '--glyph', 'dither', '--no-audio', '--quiet']);
+    ok(rD.status === 0, '--glyph dither 强制降级导出成功');
+    const dFrame = runBuf('ffmpeg', ['-v', 'error', '-i', dithFile,
+      '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray', '-']);
+    let dLit = 0;
+    for (const v of dFrame.stdout) if (v > 8) dLit++;
+    ok(dLit / dFrame.stdout.length > 0.02, '降级网点路径同样不黑屏');
+
+    // 带音轨：多轨混合成一条 AAC
+    const mixFile = path.join(TMP, 'export-mix.mp4');
+    const rMix = run(process.execPath, [EXP, '--out', out, '--to', mixFile,
+      '--duration', '0.3', '--quiet']);
+    ok(rMix.status === 0, '带音轨导出成功' + (rMix.status !== 0 ? '\n' + rMix.stderr : ''));
+    const pm = JSON.parse(run('ffprobe', ['-v', 'error', '-select_streams', 'a',
+      '-show_entries', 'stream=codec_name,channels', '-of', 'json', mixFile]).stdout);
+    ok((pm.streams || []).length === 1 && pm.streams[0].codec_name === 'aac',
+      '多轨混合成单条 AAC（宣传平台只认单轨）');
+
+    // 坏输入必须挡住，不悄悄产出坏片
+    const bad = run(process.execPath, [EXP, '--out', out, '--to', path.join(TMP, 'x.mp4'),
+      '--font', '/definitely/not/a/font.ttf']);
+    ok(bad.status !== 0 && bad.stderr.includes('--font'), '不存在的 --font 明确报错');
+    const badGlyph = run(process.execPath, [EXP, '--out', out, '--to', path.join(TMP, 'x.mp4'),
+      '--glyph', 'bogus']);
+    ok(badGlyph.status !== 0 && badGlyph.stderr.includes('--glyph'), '非法 --glyph 被拒绝');
+
     console.log(`\n✓ ${passed} 项断言全部通过`);
   })();
 }

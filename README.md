@@ -29,6 +29,7 @@
 | 色域 | 无 | 实验性 `meta.color` 声明 + P3/sRGB 协商（颜色字节不变） |
 | 网格 | 固定 64×20 | 按源片比例自动算，默认 282×60 |
 | 压缩 | 帧间差分 / 量化 | **只按块 gzip**，不差分、不量化、不丢帧 |
+| 导出 | 只能录屏 | 一键生成 H.264/AAC 普通 mp4，直接传视频网站 |
 | 依赖 | 浏览器 + 服务端 | ffmpeg + Node，**零 npm 运行时依赖** |
 
 ## 四种用法，按「要不要开终端」挑
@@ -110,6 +111,29 @@ ascii-full --src clip.mp4 --out ./ascii-out --grid 60 --force     # 去掉 --to 
 ascii-full-serve ./ascii-out 8080 --lan --open
 ascii-full-tunnel 8080 --open
 ```
+
+## 导出宣传视频（上传到视频网站）
+
+两步，别搞混：
+
+```
+① 原片.mp4  ──[ ascii-full ]──▶  字符画数据 meta.json + chunks/*.gz
+② 字符画数据 ──[ ascii-full-export ]──▶  字符画风格视频 宣传.mp4
+```
+
+第 ② 步**不重新取色、不二次转码**：`1B 索引 + 3B RGB` 被原样画成像素再封进
+mp4，相对 `chunks` 零损失；信息损失只发生在第 ① 步。所以「字符画 → 字符画风格
+视频」不是把视频再喂一遍转码器（那样会二次采样、越叠越糊），而是**把同一份数据
+按时间轴拍扁成一份可上传的快照**。
+
+```sh
+# 截 20 秒高光，字形模式，4K 档，带声音
+ascii-full-export --out ./ascii-out --to ./宣传.mp4 \
+  --from 90 --duration 20 --mode glyph --scale 2 --crf 18
+```
+
+本地那份 `meta.json + chunks/` 原样保留，仍可拖帧、换字形、叠音轨 —— 多一条导出
+通道不等于工具变成那个 mp4。观众侧零门槛，正好补上「clone 都不用」的最后一公里。
 
 ## 音频：旁路、可叠加、可不重转
 
@@ -254,7 +278,40 @@ ascii-full-term [产物目录] [选项]
 需要 `$COLORTERM=truecolor` 且终端宽度 ≥ `meta.W`；行内连续同色会合并转义序列，
 Ctrl-C 恢复光标。终端播放**无声**。
 
-### ⑥ 播放器地址参数（两个 HTML 通用）
+### ⑥ 导出宣传片：`ascii-full-export` / `node bin/export-video.js`
+
+```
+ascii-full-export --out 产物目录 --to 宣传片.mp4 [选项]
+```
+
+把已经转好的**字符画数据**渲染成一支**常规 mp4**（H.264 / yuv420p / AAC /
+faststart / BT.709 标记），观众不用装 Termux、不用开服务、不用点色块，点开就看，
+直接传视频网站做宣传。详见 [docs/EXPORT.md](docs/EXPORT.md)。
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--out DIR`（别名 `--dir`） | **必填** | 产物目录，读 `meta.json` + `chunks/*.gz` |
+| `--to FILE`（别名 `--file`） | **必填** | 输出 mp4 |
+| `--from S` | `0` | 从产物第几秒开始（**相对产物第 0 帧**，不是原片时间轴） |
+| `--duration S` | 全片 | 导出时长；宣传片建议截 15~30 秒高光 |
+| `--mode glyph\|block` | `glyph` | 黑底彩色字 / 纯色块（快） |
+| `--glyph SRC` | `auto` | `auto` / `atlas` / `font` / `dither`，见下 |
+| `--scale N` | `1` | 整数放大 1~4，走 nearest，不插值、不糊笔画 |
+| `--font FILE` | 自动探测 | 字体渲染图集用的字体文件 |
+| `--crf N` / `--preset NAME` | `18` / `medium` | x264 质量与预设 |
+| `--no-audio` | 关 | 导出无声片（默认把多轨按各自 gain / offset 混成一条 AAC 192k） |
+| `--ffmpeg P` / `--ffprobe P` | PATH | 指定二进制 |
+| `--quiet` / `--version` / `--help` | — | 精简输出 / 版本号 / 完整参数 |
+
+**字形来源**（`--glyph`）：`auto` 依次尝试「产物自带 `ramp-atlas.png`」→「ffmpeg
+drawtext 按 `meta.ramp` 渲染」→「覆盖率网点」；`atlas` / `font` 强制单一来源，
+缺了直接报错；`dither` 强制网点（无字体环境 / 自检用，不是真字形）。
+**任何来源都会先验墨量**，几乎没有墨量就自动降级 —— 绝不产出全黑视频。
+
+输出尺寸 = `W×8 × H×16 × --scale`。例 `--grid 60` 的 282×60 → `2256×960`，
+`--scale 2` → `4512×1920`。H.264 编码走 CPU（计算卡没有 NVENC 时本来也用不上）。
+
+### ⑦ 播放器地址参数（两个 HTML 通用）
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
@@ -392,14 +449,14 @@ test/                   零依赖端到端自检
 ## 图形版与一键发布
 
 ```sh
-git tag v1.5.0 && git push origin v1.5.0
+git tag v1.6.0 && git push origin v1.6.0
 ```
 
 `.github/workflows/release.yml` 会在 Windows / macOS / Linux 三地自动产出：
 
-- `ascii-full-1.5.0-*.exe / .dmg / .AppImage` —— 桌面图形版
-- `ascii-full-1.5.0-portable-<平台>.zip / .tar.gz` —— 免安装终端版（内置 Node + ffmpeg）
-- `ascii-full-1.5.0-standalone.html` —— 零安装单文件播放器
+- `ascii-full-1.6.0-*.exe / .dmg / .AppImage` —— 桌面图形版
+- `ascii-full-1.6.0-portable-<平台>.zip / .tar.gz` —— 免安装终端版（内置 Node + ffmpeg）
+- `ascii-full-1.6.0-standalone.html` —— 零安装单文件播放器
 - `SHA256SUMS.txt`
 
 本地想预览图形版：
@@ -435,7 +492,7 @@ npm test
 1. 把 `LICENSE` 里的 `ascii-full contributors` 换成你的名字 / 组织。
 2. 在 `package.json` 补 `repository` / `author` / `bugs` 字段。
 3. `npm pack --dry-run` 看一眼将要发布的文件（`files` 字段已限定范围）。
-4. 想发 npm：`npm publish`；想发安装包：推上去后 `git tag v1.5.0 && git push origin v1.5.0`。
+4. 想发 npm：`npm publish`；想发安装包：推上去后 `git tag v1.6.0 && git push origin v1.6.0`。
 5. 需要可复现的图形版构建，可在 `desktop/` 里跑一次 `npm install` 并把生成的
    `desktop/package-lock.json` 一起提交。
 
@@ -445,6 +502,7 @@ MIT · 依赖 [FFmpeg](https://ffmpeg.org/) 与 Node.js 内置模块，无其他
 
 ## 版本记录
 
+- **v1.6.0**：`ascii-full-export` 把字符画数据导出成可直接上传的 H.264/AAC 常规 mp4
 - **v1.5.0**：字形表与色域各自单独成路；WebGL 图集一次 draw call
 - **v1.4.0**：声音单独成一路，可叠加多轨、可不重转补音轨
 - **v1.3.0**：入口从「两个 HTML 文件」改成「一条 URL」，支持局域网与临时域名

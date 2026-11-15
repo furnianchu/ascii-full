@@ -2,7 +2,7 @@
   "name": "ascii-full-desktop",
   "displayName": "ascii字符画视频",
   "productName": "ascii-full",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "ascii字符画视频桌面图形版：每字符真彩帧数据，声音单独成一路",
   "main": "main.js",
   "license": "MIT",

@@ -66,7 +66,7 @@ npm run build          # 出安装包到 ../dist-desktop
 ## 一键发布
 
 ```sh
-git tag v1.5.0 && git push origin v1.5.0
+git tag v1.6.0 && git push origin v1.6.0
 ```
 
 `.github/workflows/release.yml` 三个 job：
