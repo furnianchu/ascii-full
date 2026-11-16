@@ -319,7 +319,42 @@ drawtext 按 `meta.ramp` 渲染」→「覆盖率网点」；`atlas` / `font` �
 | `?cache=N` | `6` | 内存 LRU 驻留块数，电脑可给 `12` |
 | `?mute=1` | 关 | 起播静音 |
 | `?offset=-120` | `0` | 音画偏移，**毫秒** |
-| `?nogl=1` | 关 | 强制退回 2D 字符路径（排查字形/图集问题时用） |
+| `?nogl=1` | 关 | 强制退回 2D 字符路径（等价 `?gpu=2d`） |
+| `?gpu=MODE` | `auto` | 渲染后端：`auto` / `webgpu` / `gl` / `2d` / `off`，见下 |
+
+#### 渲染后端（v1.7）
+
+状态栏现在把三件事**分开写**，不再互相冒充：
+
+```
+WebGPU字形 · sRGB · 屏P3 · 内置图集
+```
+
+- 第一段是**真在跑的后端**：`WebGPU字形` / `GL字形` / `2D字符` / `色块`
+- 第二段是**数据声明**：`sRGB` / `P3` / `P3→sRGB`（来自 `meta.color`）
+- 第三段是**屏幕探测**：`屏P3` / `屏sRGB` / `屏P3?`（部分命中，不冒充结论）
+
+BT.709 的 SDR 源片在 P3 屏上仍如实写 `sRGB` —— 生成端写的是「数据是什么」，
+不是「屏能显示什么」。把 BT.709 数值硬标成 P3 只会偏色，不会凭空变艳。
+
+默认产物（不带 `--ramp-file`）现在会**用 `meta.ramp` 现场烘一张内置图集**，
+索引与字形同源，因此也能走 GPU 一次 draw call，不再逐格 `fillText`。
+这正是旧版默认档只显示 `2D字符`、高密度档看着慢的真身。
+
+| `?gpu=` | 行为 |
+|---|---|
+| `auto`（默认） | 先试 WebGPU，失败逐级降级 WebGL → 2D → 色块 |
+| `webgpu` | 强制从 WebGPU 起，仍保留完整降级链 |
+| `gl` | 跳过 WebGPU，只走 WebGL（最成熟） |
+| `2d` / `off` | 全 2D 字符，等价 `?nogl=1` |
+
+WebGPU 档用 `r8uint` 显式整数索引纹理，`textureLoad` 直接取 0..255，
+不再经过 LUMINANCE 归一化 —— 早期「索引纹理格式没对齐 → 整帧黑」那道坑
+从格式上消失。任何一步报错都会逐级降级并**当帧立刻用 2D 重画**，绝不黑屏。
+
+> WGSL 未在真 GPU 上编译验证；支持情况以浏览器运行时探测为准，
+> 老 WebView / 电视没有 WebGPU 会自动走 WebGL 或 2D。`--half` 用 ▀ 双色，
+> 图集不适用，一律 2D。详见 [docs/WEBGPU.md](docs/WEBGPU.md)。
 
 面板：播放/暂停、0.5×~4× 变速、拖帧、`字符 ↔ 色块`、截 PNG、全屏、
 `− / ＋ / 100% / 适应`（0.5×~8×）、拖动平移、双指缩放、亮度、
@@ -418,6 +453,8 @@ CJK 双宽也不会串格。无 WebGL / `--half` / 老产物一律回退 2D。
 | 站在被删目录里起 node 报 `uv_cwd` | 先 `cd ~` 再跑，别站在要 `rm -rf` 的目录里 |
 | `✗ 已存在 meta.json` | 加 `--force`，或换一个 `--out` |
 | 字符模式一片黑，色块 / `?nogl=1` 正常 | 索引与字形表错配 → 删产物、不带 `--ramp-file` 重转 |
+| 状态栏 `WebGPU字形` 却掉帧 / 黑一下 | 会自动降级；可 `?gpu=gl` 固定 WebGL，或 `?nogl=1` 全 2D |
+| 状态栏一直 `2D字符`、觉得慢 | 看 `glNote`：`图集无效→2D` 说明图集自检没过；`--half` 产物一律 2D |
 | 画面一顿一顿 | 看状态栏 `渲染 xx/24fps`；点「色块」或先放大再判断 |
 | 没声音 | 点一下 `🔊 开声音`（浏览器拦无手势有声播放） |
 
@@ -449,14 +486,14 @@ test/                   零依赖端到端自检
 ## 图形版与一键发布
 
 ```sh
-git tag v1.6.0 && git push origin v1.6.0
+git tag v1.7.0 && git push origin v1.7.0
 ```
 
 `.github/workflows/release.yml` 会在 Windows / macOS / Linux 三地自动产出：
 
-- `ascii-full-1.6.0-*.exe / .dmg / .AppImage` —— 桌面图形版
-- `ascii-full-1.6.0-portable-<平台>.zip / .tar.gz` —— 免安装终端版（内置 Node + ffmpeg）
-- `ascii-full-1.6.0-standalone.html` —— 零安装单文件播放器
+- `ascii-full-1.7.0-*.exe / .dmg / .AppImage` —— 桌面图形版
+- `ascii-full-1.7.0-portable-<平台>.zip / .tar.gz` —— 免安装终端版（内置 Node + ffmpeg）
+- `ascii-full-1.7.0-standalone.html` —— 零安装单文件播放器
 - `SHA256SUMS.txt`
 
 本地想预览图形版：
@@ -487,14 +524,39 @@ npm test
 `.gz` 响应头）、终端播放器的 truecolor 输出，以及启动大字、日志落盘、5×7 字体表、
 桌面版/独立播放器/发布流水线的文件齐备性。零第三方依赖，CI 里也能直接跑。
 
-## 发布前
+## 发布状态
 
-1. 把 `LICENSE` 里的 `ascii-full contributors` 换成你的名字 / 组织。
-2. 在 `package.json` 补 `repository` / `author` / `bugs` 字段。
-3. `npm pack --dry-run` 看一眼将要发布的文件（`files` 字段已限定范围）。
-4. 想发 npm：`npm publish`；想发安装包：推上去后 `git tag v1.6.0 && git push origin v1.6.0`。
-5. 需要可复现的图形版构建，可在 `desktop/` 里跑一次 `npm install` 并把生成的
-   `desktop/package-lock.json` 一起提交。
+发布元信息已补齐，不再留模板待办：
+
+| 项 | 状态 |
+|---|---|
+| `LICENSE` 署名 | ✅ 已写为 `furnianchu` |
+| `package.json` 的 `repository` / `author` / `bugs` | ✅ 已补齐，指向 `furnianchu/ascii-full` |
+| `npm pack --dry-run` | 随时可跑，核对将要发布的文件清单 |
+| `npm publish` | ⬜ **未执行** —— 需你本机 `npm login` 后手动发 |
+| `desktop/package-lock.json` | 可选；做可复现图形版构建时再提交 |
+
+> 想换成真名 / 组织名，只需改两处：`LICENSE` 第 3 行、`package.json` 的 `author`。
+
+`npm publish` 是唯一还没做的一步，但它**不是其它分发路径的前置条件**：
+GitHub clone、`git tag` 触发的三平台 Release、`web/standalone.html` 都不经过 npm。
+不发 npm 也完全不影响使用。
+
+```sh
+# 发布前自检：看将要发布的文件（files 字段已限定范围）
+npm pack --dry-run
+
+# 发 npm。包名全局唯一；若提示已被占用，
+# 把 name 改成 @furnianchu/ascii-full 并保留 --access public
+npm login
+npm publish --access public
+```
+
+```sh
+# 发安装包（与 npm 无关，Release 流水线自动出三平台包）
+git tag -l v1.7.0     # 有输出就别重复打
+git tag v1.7.0 && git push origin v1.7.0
+```
 
 ## 许可协议
 
@@ -502,6 +564,7 @@ MIT · 依赖 [FFmpeg](https://ffmpeg.org/) 与 Node.js 内置模块，无其他
 
 ## 版本记录
 
+- **v1.7.0**：默认产物内置字形图集、WebGPU 可选档、屏幕探测进状态栏
 - **v1.6.0**：`ascii-full-export` 把字符画数据导出成可直接上传的 H.264/AAC 常规 mp4
 - **v1.5.0**：字形表与色域各自单独成路；WebGL 图集一次 draw call
 - **v1.4.0**：声音单独成一路，可叠加多轨、可不重转补音轨

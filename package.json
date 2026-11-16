@@ -1,7 +1,7 @@
 {
   "name": "ascii-full",
   "displayName": "ascii字符画视频",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "ascii字符画视频：把视频离线预烘焙成 gzip 分块的每字符真彩帧数据，画面/声音/字形表/色域各自单独成路，可在命令行、终端、浏览器、桌面图形版、零安装单文件里播放，也能用一条链接或临时域名分享，或一键导出成可直接上传的 H.264/AAC 常规 mp4（ffmpeg + Node，零运行时依赖）",
   "bin": {
     "ascii-full": "bin/ascii-full.js",
@@ -54,6 +54,8 @@
     "audio-sync",
     "glyph-atlas",
     "webgl",
+    "webgpu",
+    "wgsl",
     "display-p3",
     "color-gamut",
     "cjk",
@@ -61,6 +63,14 @@
     "h264",
     "ascii-video"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/furnianchu/ascii-full.git"
+  },
+  "author": "furnianchu",
+  "bugs": {
+    "url": "https://github.com/furnianchu/ascii-full/issues"
+  },
   "license": "MIT",
   "private": false
 }
