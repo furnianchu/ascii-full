@@ -533,7 +533,7 @@ npm test
 | `LICENSE` 署名 | ✅ 已写为 `furnianchu` |
 | `package.json` 的 `repository` / `author` / `bugs` | ✅ 已补齐，指向 `furnianchu/ascii-full` |
 | `npm pack --dry-run` | 随时可跑，核对将要发布的文件清单 |
-| `npm publish` | ⬜ **未执行** —— 需你本机 `npm login` 后手动发 |
+- ⬜ **npm publish** —— 不发布：本项目不经 npm 分发，clone / Release / standalone.html 已覆盖
 | `desktop/package-lock.json` | 可选；做可复现图形版构建时再提交 |
 
 > 想换成真名 / 组织名，只需改两处：`LICENSE` 第 3 行、`package.json` 的 `author`。
