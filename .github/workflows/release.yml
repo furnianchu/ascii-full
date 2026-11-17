@@ -50,7 +50,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          find desktop/dist-desktop -maxdepth 1 -type f \
+          find dist-desktop -maxdepth 1 -type f \
             \( -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' -o -name '*.zip' \) \
             -exec cp {} artifacts/ \;
           ls -lh artifacts/
